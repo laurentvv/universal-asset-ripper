@@ -1,4 +1,4 @@
-export type EngineType = "unity" | "unreal" | "godot" | "unknown";
+export type EngineType = "unity" | "unreal" | "godot" | "pe-software" | "electron" | "unknown";
 
 export type AssetCategory =
   | "texture"
@@ -14,6 +14,7 @@ export type AssetCategory =
   | "other";
 
 export interface EngineDetails {
+  framework?: string;
   isIL2CPP?: boolean;
   isMono?: boolean;
   encrypted?: boolean;

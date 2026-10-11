@@ -31,16 +31,16 @@ It operates in three modes:
 │       AdapterRegistry        │
 └──────────────┬───────────────┘
                │
-   ┌───────────┼───────────┐
-   ▼           ▼           ▼
-┌──────────┐┌──────────┐┌──────────┐
-│  Godot   ││  Unreal  ││  Unity   │
-│ Adapter  ││ Adapter  ││ Adapter  │
-└────┬─────┘└────┬─────┘└────┬─────┘
-     │           │           │
-     ▼           ▼           ▼
-[Native PCK] [repak/   [AssetRipper/
- [Parser]     CUE4Parse] UnityFS]
+   ┌───────────┼───────────┬───────────┐
+   ▼           ▼           ▼           ▼
+┌──────────┐┌──────────┐┌──────────┐┌──────────┐
+│  Godot   ││  Unreal  ││  Unity   ││ PE Soft. │
+│ Adapter  ││ Adapter  ││ Adapter  ││ Adapter  │
+└────┬─────┘└────┬─────┘└────┬─────┘└────┬─────┘
+     │           │           │           │
+     ▼           ▼           ▼           ▼
+[Native PCK] [repak/   [AssetRipper/  [PE .rsrc /
+ [Parser]     CUE4Parse] UnityFS]      Icons/DFM]
 ```
 
 ---
@@ -63,12 +63,21 @@ Heuristic analysis engine that inspects directory trees and binary file headers:
 * **Unreal PAK Parser (`src/parsers/unreal/pak-parser.ts`)**:
   - Reads `FPakInfo` located in the footer of `.pak` archives (magic `0x5A6F12E1`).
   - Reads version number, index offset, index size, and AES encryption flag.
+* **PE Resource Parser (`src/parsers/pe/pe-resource-parser.ts`)**:
+  - Traverses Windows PE directory trees across 3 levels (Types, Names/IDs, Languages).
+  - Reconstructs complete `.ico` files from `RT_GROUP_ICON` and `RT_ICON`.
+  - Extracts `RT_MANIFEST` as XML, `RT_BITMAP` as BMP, and `RT_RCDATA` (Delphi DFM forms, certificates, locales).
+  - Sniffs application framework (.NET, Delphi, Electron, Qt, Native C/C++).
 * **Unity Bundle Parser (`src/parsers/unity/bundle-parser.ts`)**:
   - Identifies `UnityFS`, `UnityWeb`, `UnityRaw`, and `SerializedFile` headers.
   - Extracts engine release version strings (e.g., `2021.3.16f1`).
 
 ### 3.3. Adapters (`src/adapters/`)
-All engine adapters inherit from `BaseEngineAdapter` and implement `IEngineAdapter`:
+All engine and software adapters inherit from `BaseEngineAdapter` and implement `IEngineAdapter`:
+* `GodotAdapter` (native PCK parsing & extraction)
+* `UnrealAdapter` (Unreal PAK & IoStore, AES decryption support)
+* `UnityAdapter` (Unity assets, scenes, AssetRipper CLI bridge)
+* `PeSoftwareAdapter` (Windows PE desktop software, icons, DFM, manifests, resources)
 * `canHandle(targetPath: string): Promise<boolean>`
 * `inspect(targetPath: string): Promise<AssetManifest>`
 * `extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult>`

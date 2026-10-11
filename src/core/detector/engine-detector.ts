@@ -5,6 +5,7 @@ import { listFilesRecursively, parsePeHeaderArch } from "../../utils/file-utils.
 import { GodotPckParser } from "../../parsers/godot/pck-parser.js";
 import { UnrealPakParser } from "../../parsers/unreal/pak-parser.js";
 import { UnityBundleParser } from "../../parsers/unity/bundle-parser.js";
+import { PeResourceParser } from "../../parsers/pe/pe-resource-parser.js";
 
 export class EngineDetector {
   /**
@@ -148,6 +149,33 @@ export class EngineDetector {
             isIL2CPP: true,
             markersFound: ["GameAssembly.dll (IL2CPP)"],
             detectedFiles
+          }
+        };
+      }
+
+      // Check generic Windows PE software executable
+      const peInfo = await PeResourceParser.parse(filePath);
+      if (peInfo) {
+        markersFound.push(`Windows PE Binary (${peInfo.arch})`);
+        markersFound.push(`Framework: ${peInfo.framework}`);
+        if (peInfo.resources.length > 0) {
+          markersFound.push(`PE Resource Directory: ${peInfo.resources.length} resource entries`);
+        }
+        return {
+          engine: "pe-software",
+          confidence: 0.95,
+          version: peInfo.framework,
+          arch: peInfo.arch,
+          containerType: `Windows PE (${peInfo.framework})`,
+          targetPath: filePath,
+          details: {
+            framework: peInfo.framework,
+            markersFound,
+            detectedFiles,
+            notes: [
+              `Sections: ${peInfo.sections.map((s) => s.name).join(", ")}`,
+              `Total Resources: ${peInfo.resources.length}`
+            ]
           }
         };
       }
@@ -375,6 +403,40 @@ export class EngineDetector {
       engine = "godot";
       confidence = Math.min(1.0, godotScore / 70);
       detectedContainer = detectedContainer ?? "PCK Archive";
+    }
+
+    // Check for Windows software application (PE executable) if no game engine matched
+    if (engine === "unknown") {
+      const exeFiles = entries.filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".exe"));
+      if (exeFiles.length > 0) {
+        const primaryExe = path.join(dirPath, exeFiles[0].name);
+        const peInfo = await PeResourceParser.parse(primaryExe);
+        if (peInfo) {
+          markersFound.push(`Windows PE Software Executable: ${exeFiles[0].name}`);
+          markersFound.push(`Framework: ${peInfo.framework}`);
+          if (peInfo.resources.length > 0) {
+            markersFound.push(`PE Resource Directory: ${peInfo.resources.length} resources`);
+          }
+          return {
+            engine: "pe-software",
+            confidence: 0.95,
+            version: peInfo.framework,
+            arch: peInfo.arch,
+            containerType: `Windows PE (${peInfo.framework})`,
+            targetPath: dirPath,
+            details: {
+              framework: peInfo.framework,
+              markersFound,
+              detectedFiles: detectedFiles.slice(0, 50),
+              notes: [
+                `Primary Executable: ${exeFiles[0].name}`,
+                `Sections: ${peInfo.sections.map((s) => s.name).join(", ")}`,
+                `Resources found: ${peInfo.resources.length}`
+              ]
+            }
+          };
+        }
+      }
     }
 
     return {

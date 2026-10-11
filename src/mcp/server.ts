@@ -28,13 +28,13 @@ export function createMcpServer(): Server {
       tools: [
         {
           name: "ripper_detect",
-          description: "Detect the game engine (Unity, Unreal Engine, Godot) and analyze container formats.",
+          description: "Detect the game engine (Unity, Unreal Engine, Godot) or Windows desktop software (PE, Delphi, .NET, Electron).",
           inputSchema: {
             type: "object",
             properties: {
               targetPath: {
                 type: "string",
-                description: "Path to the game directory or file (.exe, .pck, .pak, .bundle)"
+                description: "Path to the target directory or executable (.exe, .pck, .pak, .bundle)"
               }
             },
             required: ["targetPath"]

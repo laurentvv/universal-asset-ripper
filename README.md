@@ -5,21 +5,23 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-compatible-purple.svg)]()
 
-Extracteur, analyseur et orchestrateur multi-moteurs pour jeux vidéo (**Unity**, **Unreal Engine**, **Godot**), intégrant l'assistance d'agents IA pour le reverse engineering via [morluto/rea](https://github.com/morluto/rea).
+Extracteur, analyseur et orchestrateur multi-moteurs pour jeux vidéo (**Unity**, **Unreal Engine**, **Godot**) et **logiciels applicatifs Windows** (**Delphi**, **.NET**, **Electron**, **Qt**), intégrant l'assistance d'agents IA pour le reverse engineering via [morluto/rea](https://github.com/morluto/rea).
 
 ---
 
 ## 🎯 Fonctionnalités Clés
 
-* 🔍 **Détection Automatique de Moteur (`ripper detect`) :**
-  - Heuristiques de détection pour **Unity** (Mono vs IL2CPP), **Unreal Engine** (UE4/UE5, Zen Store IoStore), et **Godot** (v1 à v4).
+* 🔍 **Détection Automatique de Moteur & Framework (`ripper detect`) :**
+  - Heuristiques de détection pour jeux (**Unity**, **Unreal Engine**, **Godot**).
+  - Détection de frameworks applicatifs (**Delphi**, **.NET**, **Electron**, **Qt**, **Native C/C++**).
   - Détection de l'architecture PE (x86, x64, ARM64) et des conteneurs chiffrés.
-* 📦 **Parseur PCK Godot 100% Natif :**
-  - Extraction directe des conteneurs `.pck` et des exécutables embarqués sans dépendance externe.
+* 📦 **Parseurs Binaires 100% Natifs :**
+  - **Godot PCK :** Extraction directe des packages `.pck` et exécutables embarqués.
+  - **Windows PE (.rsrc) :** Reconstruction d'icônes multi-résolutions `.ico`, extraction de formulaires Delphi (`.dfm`), manifests XML (`.xml`), bitmaps (`.bmp`), certificats et données RCDATA.
 * 📊 **Inspection & Manifeste d'Assets (`ripper inspect`) :**
-  - Inventaire catégorisé : textures, maillages 3D, audios, scènes, scripts, shaders, polices.
+  - Inventaire catégorisé : textures, maillages 3D, audios, scènes, scripts, shaders, polices, formulaires, manifests.
 * ⚡ **Extraction Ciblée (`ripper extract`) :**
-  - Filtrage par catégories (`--categories texture,audio,mesh`) ou par motif (`--filter`).
+  - Filtrage par catégories (`--categories texture,audio,mesh,config`) ou par motif (`--filter`).
   - Prise en charge des clés AES-256 (`--aes-key <hex>`) pour Unreal Engine.
 * 🤖 **Analyse Binaire Assistée par IA (`ripper rea-inspect`) :**
   - Calcul de l'entropie de Shannon pour repérer les blocs de clés cryptographiques.

@@ -4,6 +4,8 @@ export * from "./adapters/index.js";
 export * from "./parsers/godot/pck-parser.js";
 export * from "./parsers/unreal/pak-parser.js";
 export * from "./parsers/unity/bundle-parser.js";
+export * from "./parsers/pe/pe-resource-parser.js";
+export * from "./adapters/pe-adapter.js";
 export * from "./rea/binary-scanner.js";
 export * from "./rea/rea-bridge.js";
 export * from "./mcp/server.js";
