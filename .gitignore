@@ -1,0 +1,44 @@
+# Build & Compiled artifacts
+bin/
+obj/
+dist/
+build/
+out/
+*.o
+*.obj
+*.dll
+*.exe
+*.so
+*.dylib
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# IDEs & Editor caches
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Game dumps & extracted asset caches
+dumps/
+output/
+extracted/
+*.pak
+*.utoc
+*.ucas
+*.pck
+*.assets
+*.sharedassets
+*.bundle
+*.unity3d
+
+# OS files
+.DS_Store
+Thumbs.db
