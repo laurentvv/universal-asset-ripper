@@ -1,0 +1,12 @@
+[package]
+name = "treesize-clone"
+version = "0.1.0"
+edition = "2021"
+description = "Fast multi-threaded TreeSize clone in Rust using extracted assets"
+
+[dependencies]
+rayon = "1.10"
+colored = "2.1"
+
+[build-dependencies]
+winres = "0.1"
