@@ -1,5 +1,6 @@
 # Build & Compiled artifacts
-bin/
+bin/*
+!bin/ripper.js
 obj/
 dist/
 build/

@@ -1,0 +1,48 @@
+{
+  "name": "universal-asset-ripper",
+  "version": "0.1.0",
+  "description": "Multi-engine asset ripper, inspector and orchestrator for Unity, Unreal Engine and Godot with REA AI-assisted reverse engineering",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "ripper": "./bin/ripper.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run build",
+    "start": "node ./dist/cli/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mcp": "node ./dist/cli/index.js mcp"
+  },
+  "keywords": [
+    "asset-ripper",
+    "reverse-engineering",
+    "unity",
+    "unreal-engine",
+    "godot",
+    "mcp",
+    "model-context-protocol",
+    "game-extraction",
+    "rea"
+  ],
+  "author": "Laurent VOLFF",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "ora": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

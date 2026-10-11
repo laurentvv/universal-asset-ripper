@@ -1,87 +1,155 @@
 # Universal Asset Ripper
 
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
+[![Node](https://img.shields.io/badge/node-%3E%3D22.0.0-blue.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-green.svg)]()
+[![MCP](https://img.shields.io/badge/MCP-compatible-purple.svg)]()
+
 Extracteur, analyseur et orchestrateur multi-moteurs pour jeux vidéo (**Unity**, **Unreal Engine**, **Godot**), intégrant l'assistance d'agents IA pour le reverse engineering via [morluto/rea](https://github.com/morluto/rea).
 
 ---
 
-## 🎯 Objectif du Projet
+## 🎯 Fonctionnalités Clés
 
-Fournir une interface unifiée (CLI et serveur MCP) capable de :
-1. **Détecter automatiquement le moteur** d'un jeu à partir de ses fichiers ou de son exécutable.
-2. **Extraire et convertir les assets** (modèles 3D, textures, audios, scènes, scripts) dans des formats standards (FBX, glTF, OBJ, PNG, WAV).
-3. **Piloter les meilleurs moteurs de reverse engineering spécialisés** :
-   - **Unity :** Écosystème basé sur [AssetRipper](https://github.com/AssetRipper/AssetRipper).
-   - **Unreal Engine :** Extraction des conteneurs `.pak`, `.utoc`, `.ucas` (via CUE4Parse / repak).
-   - **Godot :** Extraction des packages `.pck` et restauration de scènes/scripts (via GDRE Tools / parseur PCK natif).
-4. **Intégrer des agents de reverse engineering (REA) :** Analyse binaire en profondeur pour extraire des clés AES, décortiquer les packers personnalisés ou analyser le comportement d'exécutables compilés.
+* 🔍 **Détection Automatique de Moteur (`ripper detect`) :**
+  - Heuristiques de détection pour **Unity** (Mono vs IL2CPP), **Unreal Engine** (UE4/UE5, Zen Store IoStore), et **Godot** (v1 à v4).
+  - Détection de l'architecture PE (x86, x64, ARM64) et des conteneurs chiffrés.
+* 📦 **Parseur PCK Godot 100% Natif :**
+  - Extraction directe des conteneurs `.pck` et des exécutables embarqués sans dépendance externe.
+* 📊 **Inspection & Manifeste d'Assets (`ripper inspect`) :**
+  - Inventaire catégorisé : textures, maillages 3D, audios, scènes, scripts, shaders, polices.
+* ⚡ **Extraction Ciblée (`ripper extract`) :**
+  - Filtrage par catégories (`--categories texture,audio,mesh`) ou par motif (`--filter`).
+  - Prise en charge des clés AES-256 (`--aes-key <hex>`) pour Unreal Engine.
+* 🤖 **Analyse Binaire Assistée par IA (`ripper rea-inspect`) :**
+  - Calcul de l'entropie de Shannon pour repérer les blocs de clés cryptographiques.
+  - Recherche automatique de clés AES-256 dans les binaires x86/x64 (proximité S-Box Rijndael).
+  - Détection et validation des métadonnées IL2CPP (`global-metadata.dat`).
+  - Génération de bundles de preuves (*Evidence Bundles*) pour les agents REA.
+* 🔌 **Serveur MCP Intégré (`ripper mcp`) :**
+  - Expose les outils d'extraction aux agents IA (Claude Code, Gemini, Cursor, Antigravity).
 
 ---
 
-## 🏗️ Architecture Cible
+## 🏗️ Architecture
 
 ```
-                         ┌────────────────────────────────┐
-                         │   Universal Asset Ripper       │
-                         │   (CLI & Serveur MCP)          │
-                         └──────────────┬─────────────────┘
-                                        │
-              ┌─────────────────────────┴────────────────────────┐
-              ▼                                                  ▼
-[ Détecteur Automatique de Moteur ]                    [ Pont IA / Agent REA ]
-(Signatures: Unity, Unreal, Godot)                     (morluto/rea - Reverse binaire,
-              │                                          recherche de clés, offsets)
- ┌────────────┼────────────┐
- ▼            ▼            ▼
-[ Adaptateur ] [ Adaptateur ] [ Adaptateur ]
-   Unity           Unreal        Godot
-(AssetRipper)  (CUE4Parse /   (GDRE Tools /
-                repak / AES)    PCK Parser)
+                               ┌────────────────────────────────┐
+                               │   Universal Asset Ripper       │
+                               │   (CLI & Serveur MCP)          │
+                               └──────────────┬─────────────────┘
+                                              │
+                    ┌─────────────────────────┴────────────────────────┐
+                    ▼                                                  ▼
+      [ Détecteur Automatique de Moteur ]                    [ Pont IA / Agent REA ]
+  (Signatures: Unity, Unreal, Godot, Inconnu)            (morluto/rea - Reverse binaire,
+                    │                                      recherche de clés, offsets)
+       ┌────────────┼────────────┐
+       ▼            ▼            ▼
+ [ Adaptateur ] [ Adaptateur ] [ Adaptateur ]
+    Unity           Unreal        Godot
+ (AssetRipper)  (CUE4Parse/   (GDRE Tools /
+                 repak/AES)     PCK Parser)
+```
+
+Pour plus de détails, consultez [docs/architecture.md](docs/architecture.md).
+
+---
+
+## 🚀 Installation & Démarrage
+
+### Prérequis
+* Node.js >= 22.0.0 (compatible v24.x)
+* npm >= 10.0.0
+
+### Installation
+```bash
+git clone https://github.com/laurentvv/universal-asset-ripper.git
+cd universal-asset-ripper
+npm install
+npm run build
+```
+
+Pour utiliser la commande globale `ripper` :
+```bash
+npm link
 ```
 
 ---
 
-## 📋 Spécifications & Plan d'Implémentation (Prompt Maître)
+## 💻 Utilisation CLI
 
-Ce plan est prêt à être fourni à un agent ou exécuté par étapes :
+### 1. Détecter le moteur d'un jeu
+```bash
+ripper detect "C:/Games/MyGame"
+# ou directement sur un exécutable / package
+ripper detect "C:/Games/MyGame/MyGame.exe"
+```
 
-### Phase 1 : Initialisation du Dépôt & Environnement
-- Définition de l'arborescence modulaire (`src/core`, `src/adapters`, `src/cli`, `src/rea`).
-- Configuration des scripts de démarrage et de packaging.
+### 2. Inspecter le contenu d'un jeu
+```bash
+ripper inspect "C:/Games/MyGame/game.pck"
+```
 
-### Phase 2 : Détecteur Automatique de Moteur (`EngineDetector`)
-- Analyse heuristique de l'arborescence des fichiers du jeu :
-  - **Unity :** `UnityPlayer.dll`, répertoires `*_Data`, `globalgamemanagers`, `data.unity3d`, `GameAssembly.dll`.
-  - **Unreal Engine :** dossiers `Engine/Binaries`, dossiers `Content/Paks`, fichiers `.pak`, `.utoc`, `.ucas`.
-  - **Godot :** présence de fichiers `.pck` ou signature binaire `GDPC` dans le binaire `.exe`.
-- Détection de la version du moteur lorsque disponible.
+### 3. Extraire des assets
+```bash
+# Extraction complète
+ripper extract "C:/Games/MyGame" -o "./extracted"
 
-### Phase 3 : Adaptateurs Spécifiques (`EngineAdapter`)
-- **UnityAdapter :**
-  - Parsing des conteneurs `.assets`, `.sharedassets` et AssetBundles.
-  - Exportation vers formats 3D (glTF/FBX) et multimédias (PNG/WAV).
-- **UnrealAdapter :**
-  - Extraction des conteneurs `.pak`, `.utoc`, `.ucas`.
-  - Gestion des clés de déchiffrement AES.
-- **GodotAdapter :**
-  - Lecture des en-têtes `GDPC` et extraction des ressources indexées.
-  - Récupération des scènes et fichiers de ressources.
+# Extraction filtrée par type (textures et audios)
+ripper extract "C:/Games/MyGame" -o "./extracted" --categories texture,audio
 
-### Phase 4 : Intégration REA (`morluto/rea`)
-- Connecteur avec `rea-agents` pour l'analyse binaire profonde :
-  - Recherche automatisée de chaînes de caractères et clés de chiffrement (AES pour UE).
-  - Analyse des symboles et structures de données inconnues.
+# Extraction Unreal avec clé AES
+ripper extract "C:/Games/MyGame/Content/Paks/PakChunk0.pak" -o "./extracted" --aes-key 0x4A6B...
+```
 
-### Phase 5 : Interface CLI & MCP
-- Commandes principales :
-  - `ripper detect <chemin>` : Identifie le moteur et affiche un diagnostic.
-  - `ripper inspect <chemin>` : Liste les assets et leurs catégories.
-  - `ripper extract <chemin> -o <dossier_sortie>` : Extrait les assets.
-  - `ripper rea-inspect <exécutable>` : Lance l'agent REA sur le binaire.
+### 4. Scanner un binaire pour trouver des clés AES ou du code IL2CPP
+```bash
+ripper rea-inspect "C:/Games/MyGame/Game-Win64-Shipping.exe"
+```
 
 ---
 
-## 🔗 Références & Projets Liés
-- [AssetRipper](https://github.com/AssetRipper/AssetRipper) - Outil d'extraction et d'analyse Unity
-- [morluto/rea](https://github.com/morluto/rea) - Reverse Engineer Anything (MCP pour agents IA)
-- [CUE4Parse](https://github.com/FabianFG/CUE4Parse) - Parseur C# Unreal Engine packages
-- [GDRE Tools](https://github.com/bruvzg/gdsdecomp) - Godot Reverse Engineering Tools
+## 🤖 Configuration Serveur MCP (AI Agents)
+
+Pour connecter Universal Asset Ripper à Claude Desktop, Cursor, Gemini CLI ou Antigravity, ajoutez cette configuration dans votre fichier `mcpServers` :
+
+```json
+{
+  "mcpServers": {
+    "universal-asset-ripper": {
+      "command": "node",
+      "args": ["C:/git/universal-asset-ripper/dist/cli/index.js", "mcp"]
+    }
+  }
+}
+```
+
+### Outils exposés :
+* `ripper_detect` : Analyse heuristique et détection du moteur.
+* `ripper_inspect` : Manifeste complet des fichiers et catégories.
+* `ripper_extract` : Extraction avec filtres et support AES.
+* `ripper_scan_binary` : Détection automatique des clés AES et métadonnées IL2CPP.
+
+---
+
+## 📚 Documentation Technique
+
+* 📘 [Architecture Détaillée](docs/architecture.md)
+* 📗 [Guide Moteurs & Outils Spécialisés](docs/engines.md)
+* 📙 [Guide d'Intégration REA & Agents IA](docs/rea-guide.md)
+
+---
+
+## 🧪 Tests
+
+Le projet est testé avec [Vitest](https://vitest.dev/) sur des conteneurs synthétiques binaires :
+```bash
+npm test
+```
+
+---
+
+## 📄 Licence
+
+MIT © Laurent VOLFF
