@@ -1,10 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { BaseEngineAdapter } from "./engine-adapter.js";
 import { UnityBundleParser } from "../parsers/unity/bundle-parser.js";
 import { categorizeExtension, listFilesRecursively } from "../utils/file-utils.js";
+import { findAssetRipper, runAssetRipperHeadless } from "../utils/assetripper.js";
 import type {
   AssetItem,
   AssetManifest,
@@ -12,8 +11,6 @@ import type {
   ExtractOptions,
   ExtractionResult
 } from "../types/index.js";
-
-const execAsync = promisify(exec);
 
 export class UnityAdapter extends BaseEngineAdapter {
   readonly engine: EngineType = "unity";
@@ -32,8 +29,15 @@ export class UnityAdapter extends BaseEngineAdapter {
         const files = await fs.readdir(targetPath);
         for (const f of files) {
           const lower = f.toLowerCase();
-          if (lower === "unityplayer.dll" || lower.endsWith("_data") || lower === "monobleedingedge") {
+          if (lower === "unityplayer.dll" || lower === "monobleedingedge") {
             return true;
+          }
+          // A *_Data folder alone is not enough: require Unity's own files inside
+          if (lower.endsWith("_data")) {
+            const inner = await fs.readdir(path.join(targetPath, f)).catch(() => [] as string[]);
+            if (inner.some((n) => /^(globalgamemanagers|data\.unity3d|level0|resources\.assets)$/i.test(n))) {
+              return true;
+            }
           }
         }
       }
@@ -88,40 +92,57 @@ export class UnityAdapter extends BaseEngineAdapter {
     return this.createManifest(targetPath, assets, detectedVersion);
   }
 
-  /**
-   * Check if AssetRipper CLI is available
-   */
-  private async isAssetRipperAvailable(): Promise<string | null> {
-    const candidates = ["AssetRipper", "AssetRipper.Cli", "AssetRipper.GUI"];
-    for (const cmd of candidates) {
-      try {
-        await execAsync(`${cmd} --version`);
-        return cmd;
-      } catch {
-        // Continue
-      }
-    }
-    return null;
-  }
-
   async extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult> {
     const startTime = Date.now();
-    await fs.mkdir(options.outputDir, { recursive: true });
-
-    const assetRipperCmd = await this.isAssetRipperAvailable();
     const errors: Array<{ file: string; error: string }> = [];
+    const fail = (): ExtractionResult => ({
+      success: false,
+      extractedCount: 0,
+      outputDir: options.outputDir,
+      durationMs: Date.now() - startTime,
+      errors
+    });
 
-    if (assetRipperCmd) {
+    const hasSelection = (options.categories?.length ?? 0) > 0 || !!options.filter;
+
+    if (options.dryRun) {
+      // Nothing is written: report what the (filtered) inspection would cover
+      const manifest = await this.inspect(targetPath);
+      const { selected } = this.planExtraction(manifest.assets, options, (a) => a);
+      return {
+        success: true,
+        extractedCount: selected.length,
+        outputDir: options.outputDir,
+        durationMs: Date.now() - startTime,
+        errors: []
+      };
+    }
+
+    if (hasSelection) {
+      // AssetRipper exports the whole project; silently ignoring the selection would be misleading
+      errors.push({
+        file: targetPath,
+        error: "categories/filter are not supported for Unity extraction (AssetRipper exports everything). Re-run without them, or use --dry-run to preview."
+      });
+      return fail();
+    }
+
+    const assetRipper = await findAssetRipper();
+
+    if (assetRipper) {
       try {
-        const cmd = `${assetRipperCmd} "${targetPath}" --output "${options.outputDir}" --quiet`;
-        await execAsync(cmd);
-        const extracted = await listFilesRecursively(options.outputDir);
+        await fs.mkdir(options.outputDir, { recursive: true });
+        await runAssetRipperHeadless({ executable: assetRipper, targetPath, outputDir: options.outputDir });
+        const extracted = await listFilesRecursively(options.outputDir, 64);
         return {
-          success: true,
+          success: extracted.length > 0,
           extractedCount: extracted.length,
           outputDir: options.outputDir,
           durationMs: Date.now() - startTime,
-          errors: []
+          errors:
+            extracted.length > 0
+              ? []
+              : [{ file: targetPath, error: "AssetRipper finished but wrote no files to the output directory." }]
         };
       } catch (err: unknown) {
         errors.push({
@@ -132,16 +153,11 @@ export class UnityAdapter extends BaseEngineAdapter {
     } else {
       errors.push({
         file: targetPath,
-        error: "AssetRipper CLI is not installed in PATH. Please install it via 'dotnet tool install -g AssetRipper.Cli' or download the release from https://github.com/AssetRipper/AssetRipper."
+        error:
+          "AssetRipper was not found. Download AssetRipper.GUI.Free from https://github.com/AssetRipper/AssetRipper/releases, then set ASSETRIPPER_PATH to the executable (or its folder) or add it to PATH. It is driven through its headless web mode (there is no AssetRipper.Cli)."
       });
     }
 
-    return {
-      success: errors.length === 0,
-      extractedCount: 0,
-      outputDir: options.outputDir,
-      durationMs: Date.now() - startTime,
-      errors
-    };
+    return fail();
   }
 }

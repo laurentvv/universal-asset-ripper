@@ -22,7 +22,7 @@ This document describes internal container structures, extraction workflows, and
 
 ### Recommended External Tooling
 * [AssetRipper](https://github.com/AssetRipper/AssetRipper):
-  - CLI installation: `dotnet tool install -g AssetRipper.Cli`
+  - There is no AssetRipper.Cli: download `AssetRipper.GUI.Free` and set `ASSETRIPPER_PATH` (file or folder) or add it to PATH. The tool runs it with `--headless --port <free port>` and drives its web API.
   - Fully converts Unity assets into standard glTF, FBX, WAV, PNG, and rebuilds complete Unity project hierarchies.
 * [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL):
   - In-depth reverse engineering tool for Unity IL2CPP builds.
@@ -74,6 +74,9 @@ When packages are encrypted, an AES-256 key is required.
     }
     ```
 
+### Native reader
+`inspect` lists real entries (`--aes-key` for encrypted indexes). `extract` unpacks stored/Zlib/Gzip entries natively, AES-256 included; Oodle and unparsable paks use `repak`. Wrong keys fail with a clear error (mount point check). `ripper rea-inspect <exe> --pak <file>` marks verified keys.
+
 ### Recommended External Tooling
 * [repak](https://github.com/trumank/repak):
   - High-performance Rust CLI for unpacking and packing `.pak` files.
@@ -103,9 +106,18 @@ ripper extract Game.pck -o extracted/
 ripper extract Game.exe -o extracted/
 ```
 
+### Encrypted PCK and textures
+With the project's script encryption key (`--aes-key`, 64 hex), encrypted directories and files are decrypted (AES-256-CFB; block = md5 | size | iv | data). `--convert` writes `.ctex`/`.stex` with plain PNG/WebP payloads as images. Not validated against a real encrypted export.
+
 ### Script & Scene Restoration
 * [GDRE Tools](https://github.com/bruvzg/gdsdecomp):
   - Headless Godot fork capable of decompiling compiled GDScript bytecode (`.gdc`) and restoring `.tscn` text scenes.
+
+---
+
+## 3b. Electron
+
+`app.asar` (Chromium Pickle header + JSON tree; `.unpacked` files copied from `app.asar.unpacked/`) and Chromium `.pak` data packs (v3/v4/v5) are read natively. Output: `app.asar` content at the root, other archives under their name, packs as `<pack>/res_<id>.<ext>`. Detection reports engine `electron` for an Electron executable beside `resources/app.asar` or `resources.pak`.
 
 ---
 

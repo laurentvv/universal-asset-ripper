@@ -68,6 +68,10 @@ Heuristic analysis engine that inspects directory trees and binary file headers:
   - Reconstructs complete `.ico` files from `RT_GROUP_ICON` and `RT_ICON`.
   - Extracts `RT_MANIFEST` as XML, `RT_BITMAP` as BMP, and `RT_RCDATA` (Delphi DFM forms, certificates, locales).
   - Sniffs application framework (.NET, Delphi, Electron, Qt, Native C/C++).
+* **Unreal Pak Index (`src/parsers/unreal/pak-index.ts`)**: primary index v1-v11 (classic records, v10+ encoded entries + full directory index), AES-256 ECB index/entry decryption, Zlib/Gzip extraction, key validation (`validatePakKey`, `createPakKeyVerifier`). Other codecs fall back to `repak`.
+* **Electron (`src/parsers/electron/`)**: `asar-parser.ts`, `chromium-pak.ts`, `electron-layout.ts`.
+* **Godot crypto (`src/parsers/godot/godot-crypto.ts`, `ctex.ts`)**: FileAccessEncrypted blocks and texture payload lifting.
+* **AssetRipper (`src/utils/assetripper.ts`)**: headless web mode driver (spawn `--headless --port`, POST `/LoadFolder|/LoadFile`, `/Export/UnityProject`, kill).
 * **Unity Bundle Parser (`src/parsers/unity/bundle-parser.ts`)**:
   - Identifies `UnityFS`, `UnityWeb`, `UnityRaw`, and `SerializedFile` headers.
   - Extracts engine release version strings (e.g., `2021.3.16f1`).
@@ -76,8 +80,9 @@ Heuristic analysis engine that inspects directory trees and binary file headers:
 All engine and software adapters inherit from `BaseEngineAdapter` and implement `IEngineAdapter`:
 * `GodotAdapter` (native PCK parsing & extraction)
 * `UnrealAdapter` (Unreal PAK & IoStore, AES decryption support)
-* `UnityAdapter` (Unity assets, scenes, AssetRipper CLI bridge)
+* `UnityAdapter` (Unity assets, scenes, AssetRipper headless web bridge)
 * `PeSoftwareAdapter` (Windows PE desktop software, icons, DFM, manifests, resources)
+* `ElectronAdapter` (`app.asar` + Chromium `resources.pak`; engine `electron`)
 * `canHandle(targetPath: string): Promise<boolean>`
 * `inspect(targetPath: string): Promise<AssetManifest>`
 * `extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult>`

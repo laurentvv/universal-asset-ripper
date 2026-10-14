@@ -1,10 +1,8 @@
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import { BinaryScanner } from "./binary-scanner.js";
+import { BinaryScanner, type ScanOptions } from "./binary-scanner.js";
+import type { PakKeyValidation } from "../parsers/unreal/pak-index.js";
+import { runTool } from "../utils/exec.js";
 import type { BinaryScanResult } from "../types/index.js";
-
-const execAsync = promisify(exec);
 
 export interface ReaEvidenceBundle {
   targetBinary: string;
@@ -12,7 +10,20 @@ export interface ReaEvidenceBundle {
   evidenceType: "GameBinaryAnalysis";
   timestamp: string;
   findings: {
-    candidateAesKeys: Array<{ key: string; offset: number; confidence: string }>;
+    candidateAesKeys: Array<{
+      key: string;
+      offset: number;
+      confidence: string;
+      pattern: string;
+      occurrences?: number;
+      /** true = opens the supplied pak, false = rejected, null = could not be proven; absent without --pak */
+      verified?: boolean | null;
+      verification?: string;
+    }>;
+    /** Honest candidate accounting: the list above can be shorter than the total */
+    candidateTotal: number;
+    candidatesShown: number;
+    verifiedAgainst?: string;
     il2cppVersion?: number;
     signatures: string[];
   };
@@ -25,7 +36,7 @@ export class ReaBridge {
    */
   static async isReaAvailable(): Promise<boolean> {
     try {
-      await execAsync("rea --version");
+      await runTool("rea", ["--version"]);
       return true;
     } catch {
       return false;
@@ -35,17 +46,23 @@ export class ReaBridge {
   /**
    * Run binary inspection and generate REA evidence bundle
    */
-  static async inspectBinary(binaryPath: string): Promise<{
+  static async inspectBinary(
+    binaryPath: string,
+    options: ScanOptions = {}
+  ): Promise<{
     scan: BinaryScanResult;
     bundle: ReaEvidenceBundle;
   }> {
-    const scan = await BinaryScanner.scanBinary(binaryPath);
+    const scan = await BinaryScanner.scanBinary(binaryPath, options);
+    const verifiedKeys = scan.candidateAesKeys.filter((k) => k.verified === true);
 
     const reaPrompt = [
       `Target: ${path.basename(binaryPath)} (${scan.arch})`,
-      scan.candidateAesKeys.length > 0
-        ? `Candidate AES keys detected: ${scan.candidateAesKeys.map((k) => k.keyHex).join(", ")}`
-        : "No direct AES keys in plaintext; trace FAES::Decrypt via Ghidra or hook dynamically with Frida.",
+      verifiedKeys.length > 0
+        ? `Verified AES keys (open ${path.basename(scan.verifiedAgainst ?? "the pak")}): ${verifiedKeys.map((k) => k.keyHex).join(", ")}`
+        : scan.candidateAesKeys.length > 0
+          ? `Candidate AES keys detected (${scan.candidateTotal} candidates, showing ${scan.candidatesShown}): ${scan.candidateAesKeys.map((k) => k.keyHex).join(", ")}`
+          : "No direct AES keys in plaintext; trace FAES::Decrypt via Ghidra or hook dynamically with Frida.",
       scan.il2cppMetadata
         ? `IL2CPP metadata detected (version ${scan.il2cppMetadata.version}). Reconstruct CIL bytecode with Cpp2IL or trace il2cpp_init.`
         : "Standard native binary.",
@@ -61,8 +78,15 @@ export class ReaBridge {
         candidateAesKeys: scan.candidateAesKeys.map((k) => ({
           key: k.keyHex,
           offset: k.offset,
-          confidence: k.confidence
+          confidence: k.confidence,
+          pattern: k.pattern,
+          ...(k.occurrences !== undefined ? { occurrences: k.occurrences } : {}),
+          ...(k.verified !== undefined ? { verified: k.verified } : {}),
+          ...(k.verification !== undefined ? { verification: k.verification } : {})
         })),
+        candidateTotal: scan.candidateTotal,
+        candidatesShown: scan.candidatesShown,
+        ...(scan.verifiedAgainst ? { verifiedAgainst: scan.verifiedAgainst } : {}),
         il2cppVersion: scan.il2cppMetadata?.version,
         signatures: scan.stringsFound
       },
@@ -70,6 +94,13 @@ export class ReaBridge {
     };
 
     return { scan, bundle };
+  }
+
+  /**
+   * Check a candidate AES key against an Unreal pak with the native index reader
+   */
+  static async validateKeyAgainstPak(pakPath: string, keyHex: string): Promise<PakKeyValidation> {
+    return BinaryScanner.validateKeyAgainstPak(pakPath, keyHex);
   }
 
   /**
@@ -86,8 +117,7 @@ export class ReaBridge {
 
     try {
       const task = taskDescription ?? "Extract AES encryption keys and analyze binary offsets";
-      const cmd = `rea inspect "${binaryPath}" --task "${task}"`;
-      const { stdout, stderr } = await execAsync(cmd);
+      const { stdout, stderr } = await runTool("rea", ["inspect", binaryPath, "--task", task]);
       return {
         success: true,
         output: stdout || stderr

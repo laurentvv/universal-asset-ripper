@@ -1,17 +1,20 @@
 export type EngineType = "unity" | "unreal" | "godot" | "pe-software" | "electron" | "unknown";
 
-export type AssetCategory =
-  | "texture"
-  | "mesh"
-  | "audio"
-  | "scene"
-  | "script"
-  | "shader"
-  | "font"
-  | "video"
-  | "animation"
-  | "config"
-  | "other";
+export const ASSET_CATEGORIES = [
+  "texture",
+  "mesh",
+  "audio",
+  "scene",
+  "script",
+  "shader",
+  "font",
+  "video",
+  "animation",
+  "config",
+  "other"
+] as const;
+
+export type AssetCategory = (typeof ASSET_CATEGORIES)[number];
 
 export interface EngineDetails {
   framework?: string;
@@ -70,6 +73,11 @@ export interface ExtractOptions {
   convertFormats?: boolean;
 }
 
+export interface InspectOptions {
+  /** AES-256 key (Unreal encrypted .pak index, Godot encrypted PCK) used to list encrypted containers */
+  aesKey?: string;
+}
+
 export interface ExtractionResult {
   success: boolean;
   extractedCount: number;
@@ -82,20 +90,40 @@ export interface ExtractionResult {
 export interface IEngineAdapter {
   readonly engine: EngineType;
   canHandle(targetPath: string): Promise<boolean>;
-  inspect(targetPath: string): Promise<AssetManifest>;
+  inspect(targetPath: string, options?: InspectOptions): Promise<AssetManifest>;
   extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult>;
+}
+
+export interface AesKeyCandidate {
+  keyHex: string;
+  offset: number;
+  entropy: number;
+  confidence: "high" | "medium" | "low";
+  pattern: string;
+  /** Number of places in the binary where the same key bytes/text were found */
+  occurrences?: number;
+  /** Distance in bytes from the nearest Rijndael S-box table (S-box candidates only) */
+  distanceFromSBox?: number;
+  /** Set when a pak was supplied: true = key opens it, false = rejected, null = pak cannot prove it */
+  verified?: boolean | null;
+  verification?: string;
 }
 
 export interface BinaryScanResult {
   binaryPath: string;
   arch: "x86" | "x64" | "arm64" | "unknown";
-  candidateAesKeys: Array<{
-    keyHex: string;
-    offset: number;
-    entropy: number;
-    confidence: "high" | "medium" | "low";
-    pattern: string;
-  }>;
+  candidateAesKeys: AesKeyCandidate[];
+  /** Candidates found after filtering (the list above may be shorter) */
+  candidateTotal: number;
+  candidatesShown: number;
+  candidateCounts: { hexString: number; sbox: number };
+  /** Hex strings discarded as probable false positives, by reason */
+  filteredOut: { longerHexRun: number; sequential: number; lowEntropy: number; repeatedBlock: number; trivial: number };
+  scannedBytes: number;
+  /** true when a safety cap stopped collecting candidates early */
+  candidateCapReached?: boolean;
+  /** Pak used for key verification, when given */
+  verifiedAgainst?: string;
   il2cppMetadata?: {
     version?: number;
     offset?: number;

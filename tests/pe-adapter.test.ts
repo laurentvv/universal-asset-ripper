@@ -116,6 +116,26 @@ describe("PeResourceParser & PeSoftwareAdapter", () => {
     expect(content).toBe("<assembly/>");
   });
 
+  it("should apply dryRun, categories and filter against the inspected assets", async () => {
+    const adapter = new PeSoftwareAdapter();
+    const outDir = path.join(tmpDir, "extracted");
+
+    const dry = await adapter.extract(mockExePath, { outputDir: outDir, dryRun: true });
+    expect(dry.extractedCount).toBe(1);
+    await expect(fs.access(outDir)).rejects.toThrow();
+
+    const wrongCategory = await adapter.extract(mockExePath, { outputDir: outDir, categories: ["texture"] });
+    expect(wrongCategory.extractedCount).toBe(0);
+    await expect(fs.access(path.join(outDir, "manifest"))).rejects.toThrow();
+
+    const noMatch = await adapter.extract(mockExePath, { outputDir: outDir, filter: "RT_BITMAP" });
+    expect(noMatch.extractedCount).toBe(0);
+
+    // inspect() reports "resources/RT_MANIFEST/1.xml"
+    const match = await adapter.extract(mockExePath, { outputDir: outDir, categories: ["config"], filter: "rt_manifest" });
+    expect(match.extractedCount).toBe(1);
+  });
+
   it("should resolve PeSoftwareAdapter from AdapterRegistry", async () => {
     const { adapter, engine } = await AdapterRegistry.resolveAdapter(mockExePath);
     expect(engine).toBe("pe-software");

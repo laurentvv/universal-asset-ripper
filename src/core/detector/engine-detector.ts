@@ -1,11 +1,14 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { EngineDetectionResult, EngineDetails, EngineType } from "../../types/index.js";
+import type { EngineDetectionResult, EngineType } from "../../types/index.js";
 import { listFilesRecursively, parsePeHeaderArch } from "../../utils/file-utils.js";
 import { GodotPckParser } from "../../parsers/godot/pck-parser.js";
 import { UnrealPakParser } from "../../parsers/unreal/pak-parser.js";
 import { UnityBundleParser } from "../../parsers/unity/bundle-parser.js";
-import { PeResourceParser } from "../../parsers/pe/pe-resource-parser.js";
+import { PeResourceParser, type PeInfo } from "../../parsers/pe/pe-resource-parser.js";
+import { AsarParser } from "../../parsers/electron/asar-parser.js";
+import { ChromiumPakParser } from "../../parsers/electron/chromium-pak.js";
+import { findElectronPayload } from "../../parsers/electron/electron-layout.js";
 
 export class EngineDetector {
   /**
@@ -55,20 +58,21 @@ export class EngineDetector {
         details: {
           markersFound,
           detectedFiles,
+          encrypted: (godotPck.header.flags & 1) !== 0,
           notes: [
             `Format Version: ${godotPck.header.formatVersion}`,
-            `Files indexed: ${godotPck.files.length}`,
+            `Files indexed: ${godotPck.files.length}${godotPck.directoryError ? ` (${godotPck.directoryError})` : ""}`,
             `Embedded in executable: ${godotPck.header.isEmbedded}`
           ]
         }
       };
     }
 
-    // 2. Check Unreal Engine (.pak)
+    // 2. Check Unreal Engine (.pak): only a real FPakInfo footer counts (Chromium/Electron .pak files do not have one)
     if (ext === ".pak") {
       const pakInfo = await UnrealPakParser.readPakInfo(filePath);
-      markersFound.push("Unreal .pak container");
       if (pakInfo) {
+        markersFound.push("Unreal .pak container");
         markersFound.push(`Unreal FPakInfo (v${pakInfo.version})`);
         return {
           engine: "unreal",
@@ -84,13 +88,34 @@ export class EngineDetector {
           }
         };
       }
+    }
+
+    // 2b. Electron app archive or Chromium data pack
+    if (ext === ".asar" && (await AsarParser.isAsar(filePath))) {
       return {
-        engine: "unreal",
-        confidence: 0.85,
-        containerType: "Unreal PAK",
+        engine: "electron",
+        confidence: 0.95,
+        containerType: "ASAR",
         targetPath: filePath,
-        details: { markersFound, detectedFiles }
+        details: { framework: "Electron", markersFound: ["Electron asar archive"], detectedFiles }
       };
+    }
+    if (ext === ".pak") {
+      const chromium = await ChromiumPakParser.readPak(filePath);
+      if (chromium) {
+        return {
+          engine: "electron",
+          confidence: 0.6,
+          containerType: `Chromium PAK v${chromium.version}`,
+          targetPath: filePath,
+          details: {
+            framework: "Electron",
+            markersFound: [`Chromium resources pack v${chromium.version} (${chromium.resources.length} resources)`],
+            detectedFiles,
+            notes: ["A bare Chromium .pak is used by Electron but also by CEF/Chromium based apps."]
+          }
+        };
+      }
     }
 
     // 3. Check Unreal Zen Store containers (.utoc, .ucas)
@@ -153,9 +178,25 @@ export class EngineDetector {
         };
       }
 
+      // An executable next to its own engine data (not just any sibling) inherits that engine
+      const sibling = ext === ".exe" ? await this.detectOwnData(filePath) : null;
+      if (sibling) {
+        return {
+          ...sibling,
+          targetPath: filePath,
+          arch,
+          details: {
+            ...sibling.details,
+            detectedFiles: [filePath, ...sibling.details.detectedFiles]
+          }
+        };
+      }
+
       // Check generic Windows PE software executable
       const peInfo = await PeResourceParser.parse(filePath);
       if (peInfo) {
+        const electron = await this.detectElectronApp(path.dirname(filePath), peInfo, filePath, detectedFiles);
+        if (electron) return electron;
         markersFound.push(`Windows PE Binary (${peInfo.arch})`);
         markersFound.push(`Framework: ${peInfo.framework}`);
         if (peInfo.resources.length > 0) {
@@ -181,24 +222,6 @@ export class EngineDetector {
       }
     }
 
-    // Fallback: check sibling files if single file is in a folder
-    try {
-      const parentDir = path.dirname(filePath);
-      const parentDetection = await this.detectDirectory(parentDir, 2);
-      if (parentDetection.engine !== "unknown") {
-        return {
-          ...parentDetection,
-          targetPath: filePath,
-          details: {
-            ...parentDetection.details,
-            detectedFiles: [filePath, ...parentDetection.details.detectedFiles]
-          }
-        };
-      }
-    } catch {
-      // Ignore
-    }
-
     return {
       engine: "unknown",
       confidence: 0.1,
@@ -209,6 +232,66 @@ export class EngineDetector {
         detectedFiles
       }
     };
+  }
+
+  /**
+   * Electron: an executable detected as Electron (PE framework info) that sits next to its app.asar or
+   * Chromium resources.pak. The PE framework stays available in details.framework.
+   */
+  private static async detectElectronApp(
+    dir: string,
+    peInfo: PeInfo,
+    targetPath: string,
+    detectedFiles: string[]
+  ): Promise<EngineDetectionResult | null> {
+    if (peInfo.framework !== "Electron") return null;
+    const payload = await findElectronPayload(dir);
+    if (!payload) return null;
+
+    const markersFound = [`Windows PE Binary (${peInfo.arch})`, "Framework: Electron"];
+    if (payload.asar) markersFound.push(`Electron app archive: ${path.relative(dir, payload.asar) || path.basename(payload.asar)}`);
+    if (payload.resourcesPak) markersFound.push(`Chromium resources pack: ${path.relative(dir, payload.resourcesPak) || path.basename(payload.resourcesPak)}`);
+    return {
+      engine: "electron",
+      confidence: payload.asar ? 0.95 : 0.85,
+      arch: peInfo.arch,
+      containerType: payload.asar ? "ASAR" : "Chromium PAK",
+      targetPath,
+      details: {
+        framework: "Electron",
+        markersFound,
+        detectedFiles: detectedFiles.slice(0, 50),
+        notes: ["Detected from the PE framework plus the app.asar / resources.pak payload next to it."]
+      }
+    };
+  }
+
+  /**
+   * For a game executable, check that it sits next to its own engine data:
+   * Unity: UnityPlayer.dll beside it or a "<name>_Data" folder; Unreal: "<name>-Win64-Shipping.exe".
+   */
+  private static async detectOwnData(exePath: string): Promise<EngineDetectionResult | null> {
+    const dir = path.dirname(exePath);
+    const base = path.basename(exePath, path.extname(exePath));
+    try {
+      if (base.toLowerCase().endsWith("-win64-shipping")) {
+        return {
+          engine: "unreal",
+          confidence: 0.7,
+          targetPath: dir,
+          details: { markersFound: [`Unreal shipping executable: ${path.basename(exePath)}`], detectedFiles: [] }
+        };
+      }
+      const entries = await fs.readdir(dir);
+      const lower = new Set(entries.map((e) => e.toLowerCase()));
+      if (lower.has("unityplayer.dll") || lower.has(`${base.toLowerCase()}_data`)) {
+        const result = await this.detectDirectory(dir, 1);
+        if (result.engine === "unity") return result;
+      }
+    } catch {
+      // Ignore
+    }
+    return null;
   }
 
   /**
@@ -223,6 +306,10 @@ export class EngineDetector {
     let unityScore = 0;
     let unrealScore = 0;
     let godotScore = 0;
+
+    // Generic folder names (*_Data, Content, Engine) only count once a corroborating marker is found
+    let unityCorroborated = false;
+    let unrealCorroborated = false;
 
     let isIL2CPP = false;
     let isMono = false;
@@ -246,30 +333,43 @@ export class EngineDetector {
         // --- UNITY CHECKS ---
         if (lower === "unityplayer.dll") {
           unityScore += 50;
+          unityCorroborated = true;
           markersFound.push("UnityPlayer.dll");
         }
         if (lower === "gameassembly.dll") {
           unityScore += 40;
+          unityCorroborated = true;
           isIL2CPP = true;
           markersFound.push("GameAssembly.dll (IL2CPP runtime)");
         }
         if (lower === "data.unity3d") {
           unityScore += 30;
+          unityCorroborated = true;
           markersFound.push("data.unity3d");
         }
 
         // --- UNREAL CHECKS ---
         if (lower.endsWith(".pak")) {
-          unrealScore += 35;
-          markersFound.push(`Unreal PAK: ${entry.name}`);
-          detectedContainer = "PAK";
+          // Only a pak with a real FPakInfo footer counts (Chromium/Electron resources.pak does not)
           const pakInfo = await UnrealPakParser.readPakInfo(fullPath);
-          if (pakInfo?.isEncrypted) {
-            isEncrypted = true;
+          if (pakInfo) {
+            unrealScore += 35;
+            unrealCorroborated = true;
+            markersFound.push(`Unreal PAK: ${entry.name}`);
+            detectedContainer = "PAK";
+            if (pakInfo.isEncrypted) {
+              isEncrypted = true;
+            }
           }
+        }
+        if (lower.endsWith(".uproject") || lower.endsWith("-win64-shipping.exe")) {
+          unrealScore += 40;
+          unrealCorroborated = true;
+          markersFound.push(`Unreal project/executable: ${entry.name}`);
         }
         if (lower.endsWith(".utoc") || lower.endsWith(".ucas")) {
           unrealScore += 40;
+          unrealCorroborated = true;
           markersFound.push(`Unreal Zen Store: ${entry.name}`);
           detectedContainer = "IoStore (.utoc/.ucas)";
           detectedVersion = "Unreal Engine 5 / 4.26+";
@@ -277,11 +377,11 @@ export class EngineDetector {
 
         // --- GODOT CHECKS ---
         if (lower.endsWith(".pck")) {
-          godotScore += 50;
-          markersFound.push(`Godot PCK: ${entry.name}`);
-          detectedContainer = "PCK";
           const pckManifest = await GodotPckParser.readManifest(fullPath);
           if (pckManifest) {
+            godotScore += 50;
+            markersFound.push(`Godot PCK: ${entry.name}`);
+            detectedContainer = "PCK";
             detectedVersion = `${pckManifest.header.engineMajor}.${pckManifest.header.engineMinor}.${pckManifest.header.enginePatch}`;
             markersFound.push(`Godot PCK v${pckManifest.header.formatVersion} (Engine ${detectedVersion})`);
           }
@@ -300,7 +400,7 @@ export class EngineDetector {
       } else if (entry.isDirectory()) {
         // --- UNITY FOLDER CHECKS ---
         if (lower.endsWith("_data")) {
-          unityScore += 40;
+          unityScore += 10;
           markersFound.push(`Unity Data Folder: ${entry.name}`);
 
           // Look inside _Data folder
@@ -310,6 +410,7 @@ export class EngineDetector {
               const dfLower = df.toLowerCase();
               if (dfLower === "globalgamemanagers") {
                 unityScore += 20;
+                unityCorroborated = true;
                 markersFound.push("globalgamemanagers");
               }
               if (dfLower === "managed") {
@@ -333,6 +434,7 @@ export class EngineDetector {
 
         if (lower === "monobleedingedge") {
           unityScore += 25;
+          unityCorroborated = true;
           isMono = true;
           markersFound.push("MonoBleedingEdge runtime");
         }
@@ -350,15 +452,18 @@ export class EngineDetector {
             for (const cf of subEntries) {
               const cfLower = cf.toLowerCase();
               if (cfLower.endsWith(".pak")) {
+                const pakInfo = await UnrealPakParser.readPakInfo(cf);
+                if (!pakInfo) continue;
                 unrealScore += 40;
+                unrealCorroborated = true;
                 markersFound.push(`Unreal PAK: ${path.basename(cf)}`);
                 detectedContainer = "PAK";
-                const pakInfo = await UnrealPakParser.readPakInfo(cf);
-                if (pakInfo?.isEncrypted) isEncrypted = true;
+                if (pakInfo.isEncrypted) isEncrypted = true;
                 break;
               }
               if (cfLower.endsWith(".utoc") || cfLower.endsWith(".ucas")) {
                 unrealScore += 45;
+                unrealCorroborated = true;
                 markersFound.push(`Unreal Zen Store: ${path.basename(cf)}`);
                 detectedContainer = "IoStore (.utoc/.ucas)";
                 detectedVersion = "Unreal Engine 5 / 4.26+";
@@ -369,6 +474,20 @@ export class EngineDetector {
             // Ignore
           }
         }
+      }
+    }
+
+    // Electron app folder: a PE executable next to app.asar / resources.pak (checked before descending into resources/)
+    if (unityScore === 0 && unrealScore === 0 && godotScore === 0) {
+      for (const exe of entries.filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".exe"))) {
+        const peInfo = await PeResourceParser.parse(path.join(dirPath, exe.name));
+        if (!peInfo) continue;
+        const electron = await this.detectElectronApp(dirPath, peInfo, dirPath, detectedFiles);
+        if (electron) {
+          electron.details.markersFound.splice(1, 0, `Executable: ${exe.name}`);
+          return electron;
+        }
+        break; // only the first PE executable decides, like the generic PE detection below
       }
     }
 
@@ -390,6 +509,10 @@ export class EngineDetector {
     // Determine winning engine
     let engine: EngineType = "unknown";
     let confidence = 0;
+
+    // Uncorroborated generic markers cannot win
+    if (!unityCorroborated) unityScore = 0;
+    if (!unrealCorroborated) unrealScore = 0;
 
     if (unityScore > unrealScore && unityScore > godotScore && unityScore >= 20) {
       engine = "unity";
@@ -436,6 +559,24 @@ export class EngineDetector {
             }
           };
         }
+      }
+    }
+
+    if (engine === "unknown") {
+      const payload = await findElectronPayload(dirPath);
+      if (payload?.asar && (await AsarParser.isAsar(payload.asar))) {
+        return {
+          engine: "electron",
+          confidence: 0.85,
+          arch: detectedArch,
+          containerType: "ASAR",
+          targetPath: dirPath,
+          details: {
+            framework: "Electron",
+            markersFound: [`Electron app archive: ${path.relative(dirPath, payload.asar)}`],
+            detectedFiles: detectedFiles.slice(0, 50)
+          }
+        };
       }
     }
 

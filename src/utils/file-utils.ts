@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { AssetCategory } from "../types/index.js";
+import { ASSET_CATEGORIES, type AssetCategory } from "../types/index.js";
 
 const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   // Textures & Images
@@ -42,6 +42,8 @@ const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   ".ac3": "audio",
   ".aac": "audio",
   ".sample": "audio", // Godot audio sample
+  ".wem": "audio", // Wwise encoded media
+  ".bnk": "audio", // Wwise sound bank
 
   // Scenes & Levels
   ".unity": "scene",
@@ -75,6 +77,7 @@ const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   ".mp4": "video",
   ".webm": "video",
   ".ogv": "video",
+  ".usm": "video", // CRI Sofdec movie
   ".avi": "video",
 
   // Animations
@@ -89,7 +92,10 @@ const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   ".ini": "config",
   ".cfg": "config",
   ".tres": "config", // Godot resource
-  ".res": "config"
+  ".res": "config",
+  ".locres": "config", // Unreal localization resource
+  ".uplugin": "config",
+  ".uproject": "config"
 };
 
 export function categorizeExtension(filePath: string): AssetCategory {
@@ -199,4 +205,60 @@ export async function parsePeHeaderArch(
   } catch {
     return "unknown";
   }
+}
+
+/**
+ * Resolve an archive entry path inside outputDir. Drops URI prefixes (res://), drive
+ * letters, leading slashes and ':' characters, then rejects (returns null) anything
+ * that would escape outputDir once resolved.
+ */
+export function resolveSafeOutputPath(outputDir: string, entryPath: string): string | null {
+  let rel = entryPath.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "").replace(/\\/g, "/");
+  rel = rel.replace(/^[a-zA-Z]:/, "").replace(/:/g, "_").replace(/^\/+/, "");
+  if (rel.length === 0 || rel.includes("\0")) return null;
+
+  const root = path.resolve(outputDir);
+  const resolved = path.resolve(root, rel);
+  if (resolved === root || !resolved.startsWith(root + path.sep)) return null;
+  return resolved;
+}
+
+/**
+ * Copy `size` bytes from an open file handle (starting at `offset`) into outPath in chunks,
+ * so large entries never need a Buffer of their full size.
+ */
+export async function copyRangeToFile(
+  source: fs.FileHandle,
+  offset: number,
+  size: number,
+  outPath: string
+): Promise<void> {
+  const chunk = Buffer.alloc(Math.min(size, 1024 * 1024) || 1);
+  const out = await fs.open(outPath, "w");
+  try {
+    let done = 0;
+    while (done < size) {
+      const want = Math.min(chunk.length, size - done);
+      const { bytesRead } = await source.read(chunk, 0, want, offset + done);
+      if (bytesRead === 0) throw new Error("Unexpected end of file while copying entry data");
+      await out.write(chunk, 0, bytesRead);
+      done += bytesRead;
+    }
+  } finally {
+    await out.close();
+  }
+}
+
+/**
+ * Split user supplied category names into known AssetCategory values and unknown ones
+ */
+export function validateCategories(values: string[]): { valid: AssetCategory[]; invalid: string[] } {
+  const known = new Set<string>(ASSET_CATEGORIES);
+  const valid: AssetCategory[] = [];
+  const invalid: string[] = [];
+  for (const v of values) {
+    if (known.has(v)) valid.push(v as AssetCategory);
+    else invalid.push(v);
+  }
+  return { valid, invalid };
 }

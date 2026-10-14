@@ -43,3 +43,6 @@ extracted/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Committed test fixtures
+!tests/fixtures/**

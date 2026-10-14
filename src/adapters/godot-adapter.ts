@@ -1,13 +1,14 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { BaseEngineAdapter } from "./engine-adapter.js";
-import { GodotPckParser, type PckFileEntry } from "../parsers/godot/pck-parser.js";
+import { GodotPckParser } from "../parsers/godot/pck-parser.js";
 import type {
   AssetItem,
   AssetManifest,
   EngineType,
   ExtractOptions,
-  ExtractionResult
+  ExtractionResult,
+  InspectOptions
 } from "../types/index.js";
 
 export class GodotAdapter extends BaseEngineAdapter {
@@ -66,7 +67,7 @@ export class GodotAdapter extends BaseEngineAdapter {
     return sources;
   }
 
-  async inspect(targetPath: string): Promise<AssetManifest> {
+  async inspect(targetPath: string, options: InspectOptions = {}): Promise<AssetManifest> {
     const sources = await this.findPckSources(targetPath);
     if (sources.length === 0) {
       throw new Error(`No Godot PCK package found in target: ${targetPath}`);
@@ -76,8 +77,11 @@ export class GodotAdapter extends BaseEngineAdapter {
     let detectedEngineVersion: string | undefined;
 
     for (const source of sources) {
-      const manifest = await GodotPckParser.readManifest(source);
+      const manifest = await GodotPckParser.readManifest(source, { aesKey: options.aesKey });
       if (manifest) {
+        if (manifest.directoryError) {
+          throw new Error(`${path.basename(source)}: ${manifest.directoryError}`);
+        }
         if (!detectedEngineVersion) {
           detectedEngineVersion = `${manifest.header.engineMajor}.${manifest.header.engineMinor}.${manifest.header.enginePatch}`;
         }
@@ -107,31 +111,29 @@ export class GodotAdapter extends BaseEngineAdapter {
 
     // Parse and filter assets
     for (const source of sources) {
-      const manifest = await GodotPckParser.readManifest(source);
+      const manifest = await GodotPckParser.readManifest(source, { aesKey: options.aesKey });
       if (!manifest) continue;
-
-      let fileEntries = manifest.files;
-
-      // Apply category and string filters
-      if (options.categories && options.categories.length > 0) {
-        const allowedCats = new Set(options.categories);
-        fileEntries = fileEntries.filter((fe) => {
-          const asset = GodotPckParser.toAssetItems([fe])[0];
-          return allowedCats.has(asset.category);
-        });
-      }
-
-      if (options.filter) {
-        const f = options.filter.toLowerCase();
-        fileEntries = fileEntries.filter((fe) => fe.path.toLowerCase().includes(f));
-      }
-
-      if (options.dryRun) {
-        totalExtracted += fileEntries.length;
+      if (manifest.directoryError) {
+        errors.push({ file: source, error: manifest.directoryError });
         continue;
       }
 
-      const res = await GodotPckParser.extractFiles(source, options.outputDir, fileEntries);
+      // Match categories/filter against the same AssetItem that inspect() reports
+      const { selected, dryRun } = this.planExtraction(
+        manifest.files,
+        options,
+        (fe) => GodotPckParser.toAssetItems([fe])[0]
+      );
+
+      if (dryRun) {
+        totalExtracted += selected.length;
+        continue;
+      }
+
+      const res = await GodotPckParser.extractFiles(source, options.outputDir, selected, {
+        aesKey: options.aesKey,
+        convertFormats: options.convertFormats
+      });
       totalExtracted += res.extractedCount;
       errors.push(...res.errors);
     }
