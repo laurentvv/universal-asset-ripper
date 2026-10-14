@@ -1,6 +1,7 @@
 //! In-memory tree model: an arena of nodes addressed by `u32` indices.
 
 use crate::settings::Units;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -27,6 +28,8 @@ pub struct Node {
     pub is_dir: bool,
     /// Symlink / junction / reparse point: listed but never followed.
     pub is_link: bool,
+    /// Live-scan snapshots only: the directory is still being read (its totals are still growing).
+    pub scanning: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -59,6 +62,31 @@ impl Tree {
             p.push(part);
         }
         p
+    }
+
+    /// Names from the root's first child down to `id` (the root itself is the empty path).
+    pub fn name_path(&self, id: NodeId) -> Vec<&str> {
+        let mut parts = Vec::new();
+        let mut cur = id;
+        while cur != NONE && cur != Self::ROOT {
+            let n = self.get(cur);
+            parts.push(n.name.as_str());
+            cur = n.parent;
+        }
+        parts.reverse();
+        parts
+    }
+
+    /// Node reached by following `path` (names below the root); the inverse of `name_path`.
+    pub fn resolve_path(&self, path: &[&str]) -> Option<NodeId> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let mut cur = Self::ROOT;
+        for name in path {
+            cur = self.find_child(cur, name)?;
+        }
+        Some(cur)
     }
 
     /// Detach a subtree from its parent and subtract its totals from all ancestors.
@@ -95,6 +123,15 @@ impl Tree {
             .copied()
             .find(|&c| self.get(c).name == name)
     }
+}
+
+/// Translate node ids of `old` into the equivalent ids of `new` by path (snapshots rebuild indices);
+/// nodes that no longer exist are dropped.
+pub fn remap_ids(old: &Tree, new: &Tree, ids: &HashSet<NodeId>) -> HashSet<NodeId> {
+    ids.iter()
+        .filter(|&&id| (id as usize) < old.nodes.len())
+        .filter_map(|&id| new.resolve_path(&old.name_path(id)))
+        .collect()
 }
 
 /// Normalise a bare drive such as "C:" to "C:\".
@@ -195,5 +232,41 @@ mod tests {
         assert_eq!(format_bytes_in(1024 * 1024 * 1024, Units::MB), "1024.00 MB");
         assert_eq!(format_bytes_in(1536 * 1024 * 1024, Units::GB), "1.50 GB");
         assert_eq!(format_bytes_in(10, Units::MB), "0.00 MB");
+    }
+
+    fn dir(name: &str, parent: NodeId, children: Vec<NodeId>) -> Node {
+        Node {
+            name: name.into(),
+            parent,
+            children,
+            size: 0,
+            alloc: 0,
+            files: 0,
+            dirs: 0,
+            modified: 0,
+            attrs: 0,
+            is_dir: true,
+            is_link: false,
+            scanning: false,
+        }
+    }
+
+    #[test]
+    fn expanded_state_is_mapped_by_path_not_index() {
+        // old: root -> [a -> [b], c]
+        let old = Tree { nodes: vec![dir("R", NONE, vec![1, 3]), dir("a", 0, vec![2]), dir("b", 1, vec![]), dir("c", 0, vec![])] };
+        // new snapshot rebuilt in another order, with an extra directory: root -> [z, c, a -> [b]]
+        let new = Tree {
+            nodes: vec![dir("R", NONE, vec![1, 2, 3]), dir("z", 0, vec![]), dir("c", 0, vec![]), dir("a", 0, vec![4]), dir("b", 3, vec![])],
+        };
+        let expanded: HashSet<NodeId> = [0, 1, 2].into_iter().collect(); // R, a, b
+        let mapped = remap_ids(&old, &new, &expanded);
+        let want: HashSet<NodeId> = [0, 3, 4].into_iter().collect();
+        assert_eq!(mapped, want);
+        // a vanished directory is dropped instead of aliasing another node
+        let gone = Tree { nodes: vec![dir("R", NONE, vec![1]), dir("c", 0, vec![])] };
+        let mapped = remap_ids(&old, &gone, &expanded);
+        assert_eq!(mapped, [0].into_iter().collect());
+        assert_eq!(old.name_path(2), vec!["a", "b"]);
     }
 }

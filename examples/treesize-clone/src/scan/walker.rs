@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 #[cfg(windows)]
@@ -54,7 +54,94 @@ struct TNode {
     children: Vec<TNode>,
 }
 
+/// A directory of the live arena: created the moment it is discovered, direct totals filled in
+/// once its entries have been read.
+struct LDir {
+    name: String,
+    parent: NodeId,
+    kids: Vec<NodeId>,
+    size: u64,
+    alloc: u64,
+    files: u64,
+    dir_links: u64,
+    modified: i64,
+    attrs: u32,
+    done: bool,
+}
+
+/// Shared, lock-protected directory skeleton that the ticker turns into partial `Tree` snapshots.
+/// Children always have a larger index than their parent.
+#[derive(Default)]
+struct Live {
+    dirs: Mutex<Vec<LDir>>,
+}
+
+impl Live {
+    fn add(&self, name: String, parent: NodeId, modified: i64, attrs: u32) -> NodeId {
+        let mut d = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        let id = d.len() as NodeId;
+        d.push(LDir { name, parent, kids: Vec::new(), size: 0, alloc: 0, files: 0, dir_links: 0, modified, attrs, done: false });
+        if parent != NONE {
+            d[parent as usize].kids.push(id);
+        }
+        id
+    }
+
+    fn set_direct(&self, id: NodeId, size: u64, alloc: u64, files: u64, dir_links: u64) {
+        let mut d = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+        let n = &mut d[id as usize];
+        (n.size, n.alloc, n.files, n.dir_links) = (size, alloc, files, dir_links);
+    }
+
+    fn finish(&self, id: NodeId) {
+        self.dirs.lock().unwrap_or_else(|e| e.into_inner())[id as usize].done = true;
+    }
+
+    /// Consistent snapshot: directories only, totals aggregated up to the root, unfinished
+    /// directories flagged `scanning`. Sizes only ever grow from one snapshot to the next.
+    fn snapshot(&self) -> Tree {
+        let mut nodes: Vec<Node> = {
+            let d = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
+            d.iter()
+                .map(|n| Node {
+                    name: n.name.clone(),
+                    parent: n.parent,
+                    children: n.kids.clone(),
+                    size: n.size,
+                    alloc: n.alloc,
+                    files: n.files,
+                    dirs: n.dir_links,
+                    modified: n.modified,
+                    attrs: n.attrs,
+                    is_dir: true,
+                    is_link: false,
+                    scanning: !n.done,
+                })
+                .collect()
+        };
+        for i in (1..nodes.len()).rev() {
+            let (size, alloc, files, dirs, parent) = {
+                let n = &nodes[i];
+                (n.size, n.alloc, n.files, n.dirs, n.parent as usize)
+            };
+            let p = &mut nodes[parent];
+            p.size += size;
+            p.alloc += alloc;
+            p.files += files;
+            p.dirs += 1 + dirs;
+        }
+        Tree { nodes }
+    }
+}
+
+/// Receives partial snapshots while a scan runs.
+pub type Sink<'a> = &'a (dyn Fn(Tree) + Sync);
+
+const FIRST_SNAPSHOT: Duration = Duration::from_millis(150);
+const MIN_SNAPSHOT_GAP: Duration = Duration::from_millis(200);
+
 struct Ctx<'a> {
+    live: &'a Live,
     progress: &'a Progress,
     cancel: &'a AtomicBool,
     excludes: &'a [PathBuf],
@@ -118,7 +205,7 @@ fn allocated(_path: &Path, meta: &fs::Metadata, _logical: u64, _attrs: u32) -> u
     meta.blocks() * 512
 }
 
-fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx) -> TNode {
+fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx, lid: NodeId) -> TNode {
     let mut node = TNode {
         name,
         size: 0,
@@ -143,10 +230,12 @@ fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx) -> TN
         Ok(rd) => rd,
         Err(e) => {
             ctx.err(path, &e);
+            ctx.live.finish(lid);
             return node;
         }
     };
-    let mut subdirs: Vec<(PathBuf, String, fs::Metadata)> = Vec::new();
+    let mut subdirs: Vec<(PathBuf, String, fs::Metadata, NodeId)> = Vec::new();
+    let (mut d_size, mut d_alloc, mut d_files, mut d_links) = (0u64, 0u64, 0u64, 0u64);
     for entry in rd {
         let entry = match entry {
             Ok(e) => e,
@@ -173,6 +262,11 @@ fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx) -> TN
         let is_link = ft.is_symlink() || (attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 && ft.is_dir());
         if is_link {
             // Symlinks / junctions: record the entry, never descend (no loops).
+            if ft.is_dir() {
+                d_links += 1;
+            } else {
+                d_files += 1;
+            }
             node.children.push(TNode {
                 name: ename,
                 size: 0,
@@ -186,12 +280,17 @@ fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx) -> TN
                 children: Vec::new(),
             });
         } else if ft.is_dir() {
-            subdirs.push((epath, ename, emeta));
+            // Registered immediately so the folder shows up in the live tree before it is read.
+            let id = ctx.live.add(ename.clone(), lid, mtime(&emeta), attrs);
+            subdirs.push((epath, ename, emeta, id));
         } else {
             let logical = emeta.len();
             let alloc = allocated(&epath, &emeta, logical, attrs);
             ctx.progress.files.fetch_add(1, Ordering::Relaxed);
             ctx.progress.bytes.fetch_add(logical, Ordering::Relaxed);
+            d_size += logical;
+            d_alloc += alloc;
+            d_files += 1;
             node.children.push(TNode {
                 name: ename,
                 size: logical,
@@ -206,11 +305,13 @@ fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx) -> TN
             });
         }
     }
+    ctx.live.set_direct(lid, d_size, d_alloc, d_files, d_links);
     let sub: Vec<TNode> = subdirs
         .par_iter()
-        .map(|(p, n, m)| walk(p, n.clone(), Some(m), ctx))
+        .map(|(p, n, m, id)| walk(p, n.clone(), Some(m), ctx, *id))
         .collect();
     node.children.extend(sub);
+    ctx.live.finish(lid);
     for c in &node.children {
         node.size += c.size;
         node.alloc += c.alloc;
@@ -238,6 +339,7 @@ fn flatten(t: TNode, parent: NodeId, out: &mut Vec<Node>) -> NodeId {
         attrs: t.attrs,
         is_dir: t.is_dir,
         is_link: t.is_link,
+        scanning: false,
     });
     for c in t.children {
         let cid = flatten(c, id, out);
@@ -248,15 +350,50 @@ fn flatten(t: TNode, parent: NodeId, out: &mut Vec<Node>) -> NodeId {
 
 /// Scan `root` synchronously (blocks the calling thread). Cancel via `cancel`.
 pub fn scan_blocking(root: &Path, progress: &Progress, cancel: &AtomicBool, excludes: &[PathBuf]) -> ScanResult {
+    scan_live(root, progress, cancel, excludes, None)
+}
+
+/// Like `scan_blocking`; with a `sink`, partial snapshots (directories only, aggregated totals,
+/// unfinished directories flagged `scanning`) are delivered every ~200 ms from a helper thread,
+/// plus a last one when the walk ends. The sink must never block the scan.
+pub fn scan_live(root: &Path, progress: &Progress, cancel: &AtomicBool, excludes: &[PathBuf], sink: Option<Sink>) -> ScanResult {
     let start = Instant::now();
-    let ctx = Ctx { progress, cancel, excludes, errors: Mutex::new(Vec::new()) };
+    let live = Live::default();
+    let ctx = Ctx { live: &live, progress, cancel, excludes, errors: Mutex::new(Vec::new()) };
     let root_name = root.to_string_lossy().into_owned();
     let meta = fs::metadata(root).ok();
+    let rid = live.add(root_name.clone(), NONE, meta.as_ref().map(mtime).unwrap_or(0), meta.as_ref().map(attrs_of).unwrap_or(0));
     let pool = rayon::ThreadPoolBuilder::new().stack_size(32 << 20).build();
-    let troot = match &pool {
-        Ok(p) => p.install(|| walk(root, root_name, meta.as_ref(), &ctx)),
-        Err(_) => walk(root, root_name, meta.as_ref(), &ctx),
-    };
+    let finished = AtomicBool::new(false);
+    let troot = std::thread::scope(|s| {
+        if let Some(sink) = sink {
+            s.spawn(|| {
+                let mut wait = FIRST_SNAPSHOT;
+                'outer: loop {
+                    let until = Instant::now() + wait;
+                    while Instant::now() < until {
+                        if finished.load(Ordering::Relaxed) {
+                            break 'outer;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    let t = Instant::now();
+                    sink(live.snapshot());
+                    // Back off when snapshots get expensive so they never steal the scan's time.
+                    wait = MIN_SNAPSHOT_GAP.max(t.elapsed() * 4);
+                }
+            });
+        }
+        let troot = match &pool {
+            Ok(p) => p.install(|| walk(root, root_name.clone(), meta.as_ref(), &ctx, rid)),
+            Err(_) => walk(root, root_name.clone(), meta.as_ref(), &ctx, rid),
+        };
+        finished.store(true, Ordering::Relaxed);
+        troot
+    });
+    if let Some(sink) = sink {
+        sink(live.snapshot());
+    }
     let mut nodes = Vec::new();
     flatten(troot, NONE, &mut nodes);
     ScanResult {
@@ -271,4 +408,33 @@ pub fn scan_blocking(root: &Path, progress: &Progress, cancel: &AtomicBool, excl
 /// Convenience used by the CLI and tests: scan without progress/cancel plumbing.
 pub fn scan_simple(root: &Path) -> ScanResult {
     scan_blocking(root, &Progress::default(), &AtomicBool::new(false), &[])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_aggregates_and_flags_unfinished_dirs() {
+        let live = Live::default();
+        let root = live.add("R".into(), NONE, 0, 0);
+        let a = live.add("a".into(), root, 0, 0);
+        let b = live.add("b".into(), a, 0, 0);
+        live.set_direct(root, 1, 4096, 1, 0);
+        live.set_direct(a, 10, 4096, 2, 0);
+        live.set_direct(b, 100, 4096, 3, 1);
+        live.finish(root);
+        live.finish(b);
+        let t = live.snapshot();
+        let n = |i: NodeId| t.get(i);
+        assert_eq!((n(root).size, n(root).files, n(root).dirs), (111, 6, 3));
+        assert_eq!((n(a).size, n(a).files, n(a).dirs), (110, 5, 2));
+        assert_eq!((n(b).size, n(b).files, n(b).dirs), (100, 3, 1));
+        assert!(!n(root).scanning && n(a).scanning && !n(b).scanning);
+        // growing a directory later never shrinks any total
+        live.set_direct(b, 150, 4096, 4, 1);
+        live.finish(a);
+        let t2 = live.snapshot();
+        assert!(t2.get(root).size >= t.get(root).size && !t2.get(a).scanning);
+    }
 }
