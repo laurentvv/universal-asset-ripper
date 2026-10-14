@@ -181,6 +181,14 @@ Add the server to your `mcpServers` configuration file:
 }
 ```
 
+### Restricting file access
+
+By default the MCP tools accept any path. To confine an agent to specific folders, pass `--root` (repeatable) or set `UAR_ALLOWED_ROOTS` (path-delimited: `;` on Windows, `:` elsewhere). Every `targetPath`, `binaryPath`, `pakPath` and `outputDir` must then resolve (symlinks followed) inside one of the roots, otherwise the call returns an error.
+
+```json
+"args": ["C:/git/universal-asset-ripper/dist/cli/index.js", "mcp", "--root", "D:/Games", "--root", "D:/Extracted"]
+```
+
 ### Tools Exposed to Agents
 | Tool Name | Description |
 | :--- | :--- |
@@ -221,6 +229,24 @@ The test suite validates parser accuracy against synthetically generated binary 
 ```bash
 npm test
 ```
+
+Check your environment (Node.js, repak, AssetRipper, rea) with `ripper doctor` (`--json` for machine-readable output).
+
+---
+
+## 🛠️ Development
+
+```bash
+npm ci                  # install
+npm run lint            # ESLint (flat config, typescript-eslint)
+npx tsc --noEmit        # type check
+npm run build           # compile to dist/
+npm test                # build + vitest
+npm run test:coverage   # vitest with v8 coverage
+npm run clean           # remove dist/ and coverage/
+```
+
+CI (`.github/workflows/ci.yml`) runs lint, build and tests on Ubuntu and Windows with Node 22 and 24.
 
 ---
 

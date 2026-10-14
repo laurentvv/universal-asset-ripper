@@ -137,6 +137,7 @@ export function guessResourceExtension(data: Buffer): string {
   const sample = data.subarray(0, 4096);
   if (sample.includes(0)) return "bin";
   const text = sample.toString("utf8");
+  // eslint-disable-next-line no-control-regex
   const bad = (text.match(/[\u0000-\u0008\u000e-\u001f�]/g) ?? []).length;
   if (bad / Math.max(1, text.length) > 0.02) return "bin";
 

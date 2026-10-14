@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { callTool } from "../src/mcp/server.js";
+import { callTool, setAllowedRoots } from "../src/mcp/server.js";
 
 function textOf(result: Awaited<ReturnType<typeof callTool>>): string {
   return result.content[0].text;
@@ -73,5 +73,80 @@ describe("MCP tool calls", () => {
 
     const badLimit = await callTool("ripper_inspect", { targetPath: realPck, limit: -1 });
     expect(badLimit.isError).toBe(true);
+  });
+});
+
+describe("MCP allowed roots", () => {
+  let rootDir: string;
+  let outsideDir: string;
+  const realPck = path.resolve("tests/fixtures/godot/godot4-v4.pck");
+
+  beforeEach(async () => {
+    rootDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-root-")));
+    outsideDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-outside-")));
+    await fs.copyFile(realPck, path.join(rootDir, "game.pck"));
+  });
+
+  afterEach(async () => {
+    setAllowedRoots(undefined);
+    delete process.env.UAR_ALLOWED_ROOTS;
+    await fs.rm(rootDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  });
+
+  it("allows everything when no root is configured", async () => {
+    expect((await callTool("ripper_detect", { targetPath: realPck })).isError).toBeUndefined();
+  });
+
+  it("rejects paths outside the roots and accepts paths inside (setAllowedRoots)", async () => {
+    setAllowedRoots([rootDir]);
+    const inside = await callTool("ripper_detect", { targetPath: path.join(rootDir, "game.pck") });
+    expect(inside.isError).toBeUndefined();
+
+    const outside = await callTool("ripper_detect", { targetPath: realPck });
+    expect(outside.isError).toBe(true);
+    expect(outside.content[0].text).toContain("outside the allowed root");
+
+    const traversal = await callTool("ripper_detect", { targetPath: path.join(rootDir, "..", path.basename(outsideDir)) });
+    expect(traversal.isError).toBe(true);
+  });
+
+  it("checks outputDir, binaryPath and pakPath too", async () => {
+    setAllowedRoots([rootDir]);
+    const badOut = await callTool("ripper_extract", {
+      targetPath: path.join(rootDir, "game.pck"),
+      outputDir: path.join(outsideDir, "out"),
+      dryRun: true
+    });
+    expect(badOut.isError).toBe(true);
+    expect(badOut.content[0].text).toContain("'outputDir'");
+
+    const badBin = await callTool("ripper_scan_binary", { binaryPath: path.join(outsideDir, "x.exe") });
+    expect(badBin.content[0].text).toContain("'binaryPath'");
+
+    const badPak = await callTool("ripper_scan_binary", {
+      binaryPath: path.join(rootDir, "game.pck"),
+      pakPath: path.join(outsideDir, "x.pak")
+    });
+    expect(badPak.content[0].text).toContain("'pakPath'");
+  });
+
+  it("reads UAR_ALLOWED_ROOTS from the environment", async () => {
+    process.env.UAR_ALLOWED_ROOTS = [rootDir, outsideDir].join(path.delimiter);
+    expect((await callTool("ripper_detect", { targetPath: path.join(rootDir, "game.pck") })).isError).toBeUndefined();
+    process.env.UAR_ALLOWED_ROOTS = outsideDir;
+    expect((await callTool("ripper_detect", { targetPath: path.join(rootDir, "game.pck") })).isError).toBe(true);
+  });
+
+  it("rejects a symlink that escapes the root", async (ctx) => {
+    const link = path.join(rootDir, "escape");
+    try {
+      await fs.symlink(outsideDir, link, "junction");
+    } catch {
+      ctx.skip();
+    }
+    setAllowedRoots([rootDir]);
+    const res = await callTool("ripper_detect", { targetPath: link });
+    expect(res.isError).toBe(true);
   });
 });

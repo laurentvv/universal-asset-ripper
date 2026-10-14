@@ -6,8 +6,9 @@ import * as path from "node:path";
 import { EngineDetector } from "../core/detector/engine-detector.js";
 import { AdapterRegistry } from "../adapters/index.js";
 import { ReaBridge } from "../rea/rea-bridge.js";
-import { runMcpServer } from "../mcp/server.js";
+import { runMcpServer, setAllowedRoots } from "../mcp/server.js";
 import { ASSET_CATEGORIES } from "../types/index.js";
+import { runDoctor } from "../utils/doctor.js";
 import { validateCategories } from "../utils/file-utils.js";
 
 const program = new Command();
@@ -334,8 +335,29 @@ program
 program
   .command("mcp")
   .description("Start the Model Context Protocol (MCP) server over standard I/O")
-  .action(async () => {
+  .option("--root <dir>", "Restrict every path the server touches to this directory (repeatable; also UAR_ALLOWED_ROOTS)", (v: string, prev: string[]) => [...prev, v], [] as string[])
+  .action(async (opts: { root: string[] }) => {
+    setAllowedRoots(opts.root.map((r) => path.resolve(r)));
     await runMcpServer();
+  });
+
+// Command: doctor
+program
+  .command("doctor")
+  .description("Check the environment: Node.js, repak, AssetRipper and rea")
+  .option("--json", "Output the report as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const report = await runDoctor();
+    if (opts.json) {
+      printJson(report);
+    } else {
+      console.log(chalk.bold("Universal Asset Ripper - doctor"));
+      for (const c of report.checks) {
+        const mark = c.found ? chalk.green("OK     ") : chalk.yellow("MISSING");
+        console.log(`  ${mark} ${c.name.padEnd(12)} ${c.found ? `${c.version ?? "(version unknown)"}${c.path ? ` [${c.path}]` : ""}` : (c.hint ?? "")}`);
+      }
+    }
+    if (!report.ok) process.exitCode = 1;
   });
 
 program.parse(process.argv);

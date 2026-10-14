@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { EngineDetectionResult, EngineDetails, EngineType } from "../../types/index.js";
+import type { EngineDetectionResult, EngineType } from "../../types/index.js";
 import { listFilesRecursively, parsePeHeaderArch } from "../../utils/file-utils.js";
 import { GodotPckParser } from "../../parsers/godot/pck-parser.js";
 import { UnrealPakParser } from "../../parsers/unreal/pak-parser.js";

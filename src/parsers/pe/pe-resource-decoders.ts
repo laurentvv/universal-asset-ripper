@@ -16,7 +16,7 @@ export function buildBmpFile(dib: Buffer): Buffer {
   if (dib.length < 12) return dib;
 
   const biSize = dib.readUInt32LE(0);
-  let paletteBytes = 0;
+  let paletteBytes: number;
   let masksBytes = 0;
 
   if (biSize === 12) {

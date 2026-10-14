@@ -145,7 +145,8 @@ async function postForm(url: string, fields: Record<string, string>, timeoutMs: 
     throw new Error(
       timedOut
         ? `${what} timed out after ${Math.round(timeoutMs / 1000)}s.`
-        : `${what} failed: ${err instanceof Error ? err.message : String(err)}`
+        : `${what} failed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
     );
   }
   // 2xx and redirects (AssetRipper answers form posts with a redirect) are success
@@ -197,7 +198,7 @@ export async function runAssetRipperHeadless(options: AssetRipperRunOptions): Pr
     try {
       await waitForServer(port, child, exited, options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
     } catch (err: unknown) {
-      throw new Error(describeFailure(err instanceof Error ? err.message : String(err), tail));
+      throw new Error(describeFailure(err instanceof Error ? err.message : String(err), tail), { cause: err });
     }
 
     try {
@@ -215,7 +216,7 @@ export async function runAssetRipperHeadless(options: AssetRipperRunOptions): Pr
         "Exporting the Unity project"
       );
     } catch (err: unknown) {
-      throw new Error(describeFailure(err instanceof Error ? err.message : String(err), tail));
+      throw new Error(describeFailure(err instanceof Error ? err.message : String(err), tail), { cause: err });
     }
   } finally {
     await shutdown(child, exited);

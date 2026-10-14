@@ -4,6 +4,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { EngineDetector } from "../core/detector/engine-detector.js";
 import { AdapterRegistry } from "../adapters/index.js";
 import { ReaBridge } from "../rea/rea-bridge.js";
@@ -67,6 +69,55 @@ function optionalLimit(args: ToolArgs): number {
   return value;
 }
 
+let configuredRoots: string[] | undefined;
+
+/** Override the allow-list of root directories (e.g. from `ripper mcp --root`); undefined falls back to UAR_ALLOWED_ROOTS */
+export function setAllowedRoots(roots: string[] | undefined): void {
+  configuredRoots = roots && roots.length > 0 ? roots : undefined;
+}
+
+function activeRoots(): string[] | undefined {
+  if (configuredRoots) return configuredRoots;
+  const env = process.env.UAR_ALLOWED_ROOTS?.trim();
+  if (!env) return undefined;
+  const roots = env.split(path.delimiter).filter((r) => r.trim().length > 0);
+  return roots.length > 0 ? roots : undefined;
+}
+
+/** Resolve a path through symlinks as far as it exists, then append the not-yet-existing tail */
+async function realResolve(p: string): Promise<string> {
+  let current = path.resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return path.join(await fs.realpath(current), ...tail.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(p);
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  if (rel === "") return true;
+  if (path.isAbsolute(rel) || rel === ".." || rel.startsWith(`..${path.sep}`)) return false;
+  return true;
+}
+
+/** Fail unless the path resolves inside one of the allowed roots (no-op when no allow-list is set) */
+async function assertAllowed(key: string, value: string | undefined): Promise<void> {
+  const roots = activeRoots();
+  if (!roots || value === undefined) return;
+  const target = await realResolve(value);
+  for (const root of roots) {
+    if (isInside(await realResolve(root), target)) return;
+  }
+  throw new Error(`Access denied: '${key}' (${value}) is outside the allowed root directories.`);
+}
+
 /**
  * Execute one MCP tool call. Errors (including invalid arguments) come back as isError results.
  */
@@ -74,11 +125,13 @@ export async function callTool(name: string, args: ToolArgs) {
   try {
     if (name === "ripper_detect") {
       const targetPath = requireString(args, "targetPath");
+      await assertAllowed("targetPath", targetPath);
       return jsonResult(await EngineDetector.detect(targetPath));
     }
 
     if (name === "ripper_inspect") {
       const targetPath = requireString(args, "targetPath");
+      await assertAllowed("targetPath", targetPath);
       const limit = optionalLimit(args);
       const aesKey = optionalString(args, "aesKey");
       const { adapter } = await AdapterRegistry.resolveAdapter(targetPath);
@@ -99,6 +152,8 @@ export async function callTool(name: string, args: ToolArgs) {
       const filter = optionalString(args, "filter");
       const aesKey = optionalString(args, "aesKey");
       const dryRun = optionalBoolean(args, "dryRun");
+      await assertAllowed("targetPath", targetPath);
+      await assertAllowed("outputDir", outputDir);
       const convertFormats = optionalBoolean(args, "convertFormats");
 
       const { adapter } = await AdapterRegistry.resolveAdapter(targetPath);
@@ -116,6 +171,8 @@ export async function callTool(name: string, args: ToolArgs) {
     if (name === "ripper_scan_binary") {
       const binaryPath = requireString(args, "binaryPath");
       const pakPath = optionalString(args, "pakPath");
+      await assertAllowed("binaryPath", binaryPath);
+      await assertAllowed("pakPath", pakPath);
       return jsonResult(await ReaBridge.inspectBinary(binaryPath, { pakPath }));
     }
 
