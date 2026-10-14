@@ -130,6 +130,7 @@ enum Action {
     CopyPath(NodeId),
     Properties(NodeId),
     Exclude(NodeId),
+    Delete(NodeId),
 }
 
 struct Loaded {
@@ -202,6 +203,8 @@ pub struct App {
     rows_dirty: bool,
     selected: Option<NodeId>,
     props: Option<NodeId>,
+    confirm_delete: Option<NodeId>,
+    delete_error: Option<String>,
     show_errors: bool,
     chevrons: Option<Chevrons>,
     status: String,
@@ -471,6 +474,8 @@ impl App {
             rows_dirty: true,
             selected: None,
             props: None,
+            confirm_delete: None,
+            delete_error: None,
             show_errors: false,
             status: tr("Ready"),
             menu_items,
@@ -719,6 +724,7 @@ impl App {
                         open_in_explorer(&l.tree.path_of(id));
                     }
                 }
+                Action::Delete(id) => self.confirm_delete = Some(id),
                 Action::Exclude(id) => {
                     if let Some(l) = &mut self.loaded {
                         self.excludes.push(l.tree.path_of(id));
@@ -1273,6 +1279,10 @@ impl App {
                             actions.push(Action::Exclude(id));
                             ui.close();
                         }
+                        if !pseudo && id != Tree::ROOT && ui.button(tr("Delete (Recycle Bin)")).clicked() {
+                            actions.push(Action::Delete(id));
+                            ui.close();
+                        }
                     });
                 });
             });
@@ -1697,8 +1707,65 @@ impl App {
         }
     }
 
+    fn delete_window(&mut self, ctx: &egui::Context) {
+        if self.confirm_delete.is_none() && self.delete_error.is_none() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
+                if let Some(id) = self.selected.filter(|&id| id != Tree::ROOT && self.handle.is_none()) {
+                    self.confirm_delete = Some(id);
+                }
+            }
+            return;
+        }
+        if let Some(err) = self.delete_error.clone() {
+            let mut open = true;
+            egui::Window::new(tr("Delete (Recycle Bin)")).open(&mut open).collapsible(false).show(ctx, |ui| {
+                ui.label(err);
+                if ui.button(tr("OK")).clicked() {
+                    self.delete_error = None;
+                }
+            });
+            if !open {
+                self.delete_error = None;
+            }
+            return;
+        }
+        let Some(id) = self.confirm_delete else { return };
+        let Some(l) = &self.loaded else {
+            self.confirm_delete = None;
+            return;
+        };
+        let path = l.tree.path_of(id);
+        let size = l.tree.get(id).size;
+        let (mut yes, mut no) = (false, false);
+        egui::Window::new(tr("Delete (Recycle Bin)")).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(path.to_string_lossy());
+            ui.label(format_bytes(size));
+            ui.horizontal(|ui| {
+                yes = ui.button(tr("Delete")).clicked();
+                no = ui.button(tr("Cancel")).clicked();
+            });
+        });
+        if no {
+            self.confirm_delete = None;
+        } else if yes {
+            self.confirm_delete = None;
+            match crate::trash::recycle(&path) {
+                Ok(()) => {
+                    if let Some(l) = &mut self.loaded {
+                        l.tree.remove_subtree(id);
+                    }
+                    self.selected = None;
+                    self.view_root = Tree::ROOT;
+                    self.invalidate();
+                }
+                Err(e) => self.delete_error = Some(format!("{}: {e}", path.display())),
+            }
+        }
+    }
+
     fn windows(&mut self, ctx: &egui::Context) {
         self.options_window(ctx);
+        self.delete_window(ctx);
         self.about_window(ctx);
         if let (Some(id), Some(l)) = (self.props, &self.loaded) {
             let mut open = true;
