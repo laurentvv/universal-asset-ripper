@@ -1,10 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { BaseEngineAdapter } from "./engine-adapter.js";
 import { UnityBundleParser } from "../parsers/unity/bundle-parser.js";
 import { categorizeExtension, listFilesRecursively } from "../utils/file-utils.js";
+import { runTool } from "../utils/exec.js";
 import type {
   AssetItem,
   AssetManifest,
@@ -12,8 +11,6 @@ import type {
   ExtractOptions,
   ExtractionResult
 } from "../types/index.js";
-
-const execAsync = promisify(exec);
 
 export class UnityAdapter extends BaseEngineAdapter {
   readonly engine: EngineType = "unity";
@@ -32,8 +29,15 @@ export class UnityAdapter extends BaseEngineAdapter {
         const files = await fs.readdir(targetPath);
         for (const f of files) {
           const lower = f.toLowerCase();
-          if (lower === "unityplayer.dll" || lower.endsWith("_data") || lower === "monobleedingedge") {
+          if (lower === "unityplayer.dll" || lower === "monobleedingedge") {
             return true;
+          }
+          // A *_Data folder alone is not enough: require Unity's own files inside
+          if (lower.endsWith("_data")) {
+            const inner = await fs.readdir(path.join(targetPath, f)).catch(() => [] as string[]);
+            if (inner.some((n) => /^(globalgamemanagers|data\.unity3d|level0|resources\.assets)$/i.test(n))) {
+              return true;
+            }
           }
         }
       }
@@ -95,7 +99,7 @@ export class UnityAdapter extends BaseEngineAdapter {
     const candidates = ["AssetRipper", "AssetRipper.Cli", "AssetRipper.GUI"];
     for (const cmd of candidates) {
       try {
-        await execAsync(`${cmd} --version`);
+        await runTool(cmd, ["--version"]);
         return cmd;
       } catch {
         // Continue
@@ -106,15 +110,45 @@ export class UnityAdapter extends BaseEngineAdapter {
 
   async extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult> {
     const startTime = Date.now();
-    await fs.mkdir(options.outputDir, { recursive: true });
-
-    const assetRipperCmd = await this.isAssetRipperAvailable();
     const errors: Array<{ file: string; error: string }> = [];
+    const fail = (): ExtractionResult => ({
+      success: false,
+      extractedCount: 0,
+      outputDir: options.outputDir,
+      durationMs: Date.now() - startTime,
+      errors
+    });
+
+    const hasSelection = (options.categories?.length ?? 0) > 0 || !!options.filter;
+
+    if (options.dryRun) {
+      // Nothing is written: report what the (filtered) inspection would cover
+      const manifest = await this.inspect(targetPath);
+      const { selected } = this.planExtraction(manifest.assets, options, (a) => a);
+      return {
+        success: true,
+        extractedCount: selected.length,
+        outputDir: options.outputDir,
+        durationMs: Date.now() - startTime,
+        errors: []
+      };
+    }
+
+    if (hasSelection) {
+      // AssetRipper exports the whole project; silently ignoring the selection would be misleading
+      errors.push({
+        file: targetPath,
+        error: "categories/filter are not supported for Unity extraction (AssetRipper exports everything). Re-run without them, or use --dry-run to preview."
+      });
+      return fail();
+    }
+
+    await fs.mkdir(options.outputDir, { recursive: true });
+    const assetRipperCmd = await this.isAssetRipperAvailable();
 
     if (assetRipperCmd) {
       try {
-        const cmd = `${assetRipperCmd} "${targetPath}" --output "${options.outputDir}" --quiet`;
-        await execAsync(cmd);
+        await runTool(assetRipperCmd, [targetPath, "--output", options.outputDir, "--quiet"]);
         const extracted = await listFilesRecursively(options.outputDir);
         return {
           success: true,
@@ -136,12 +170,6 @@ export class UnityAdapter extends BaseEngineAdapter {
       });
     }
 
-    return {
-      success: errors.length === 0,
-      extractedCount: 0,
-      outputDir: options.outputDir,
-      durationMs: Date.now() - startTime,
-      errors
-    };
+    return fail();
   }
 }

@@ -6,9 +6,33 @@ import { EngineDetector } from "../core/detector/engine-detector.js";
 import { AdapterRegistry } from "../adapters/index.js";
 import { ReaBridge } from "../rea/rea-bridge.js";
 import { runMcpServer } from "../mcp/server.js";
-import type { AssetCategory } from "../types/index.js";
+import { ASSET_CATEGORIES } from "../types/index.js";
+import { validateCategories } from "../utils/file-utils.js";
 
 const program = new Command();
+
+/**
+ * Spinner that stays silent in --json mode so stdout only carries the JSON document
+ */
+function startSpinner(text: string, json?: boolean) {
+  return ora({ text, isSilent: json === true }).start();
+}
+
+function printJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+/**
+ * Report a fatal error (stderr in --json mode) and set a failing exit code
+ */
+function failCommand(spinner: ReturnType<typeof ora>, json: boolean | undefined, message: string): void {
+  if (json) {
+    console.error(message);
+  } else {
+    spinner.fail(message);
+  }
+  process.exit(1);
+}
 
 program
   .name("ripper")
@@ -19,11 +43,16 @@ program
 program
   .command("detect <target>")
   .description("Detect the game engine (Unity, Unreal, Godot) and analyze binary/container signatures")
-  .action(async (target: string) => {
-    const spinner = ora(`Analyzing target: ${chalk.cyan(target)}...`).start();
+  .option("--json", "Print machine-readable JSON to stdout")
+  .action(async (target: string, opts: { json?: boolean }) => {
+    const spinner = startSpinner(`Analyzing target: ${chalk.cyan(target)}...`, opts.json);
     try {
       const resolved = path.resolve(target);
       const result = await EngineDetector.detect(resolved);
+      if (opts.json) {
+        printJson(result);
+        return;
+      }
       spinner.succeed(`Engine analysis completed.`);
 
       console.log();
@@ -68,8 +97,7 @@ program
       console.log(chalk.bold("────────────────────────────────────────"));
       console.log();
     } catch (err: unknown) {
-      spinner.fail(`Detection failed: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      failCommand(spinner, opts.json, `Detection failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
@@ -77,12 +105,17 @@ program
 program
   .command("inspect <target>")
   .description("Inspect game assets, listing counts and total sizes by category")
-  .action(async (target: string) => {
-    const spinner = ora(`Inspecting package: ${chalk.cyan(target)}...`).start();
+  .option("--json", "Print the full asset manifest as JSON to stdout")
+  .action(async (target: string, opts: { json?: boolean }) => {
+    const spinner = startSpinner(`Inspecting package: ${chalk.cyan(target)}...`, opts.json);
     try {
       const resolved = path.resolve(target);
       const { adapter, engine } = await AdapterRegistry.resolveAdapter(resolved);
       const manifest = await adapter.inspect(resolved);
+      if (opts.json) {
+        printJson(manifest);
+        return;
+      }
       spinner.succeed(`Inspection complete for ${chalk.yellow(engine.toUpperCase())}.`);
 
       console.log();
@@ -112,8 +145,7 @@ program
       console.log(chalk.dim("  └──────────────┴────────────┴──────────────┘"));
       console.log();
     } catch (err: unknown) {
-      spinner.fail(`Inspection failed: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      failCommand(spinner, opts.json, `Inspection failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
@@ -122,20 +154,34 @@ program
   .command("extract <target>")
   .description("Extract game assets to an output directory")
   .requiredOption("-o, --output <dir>", "Output directory for extracted assets")
-  .option("--categories <cats>", "Comma-separated categories to extract (texture,mesh,audio,scene,script,shader)")
+  .option("--categories <cats>", `Comma-separated categories to extract (${ASSET_CATEGORIES.join(",")})`)
   .option("--filter <pattern>", "Filter files containing this substring")
   .option("--aes-key <hex>", "AES-256 decryption key (Unreal Engine)")
   .option("--dry-run", "Simulate extraction without writing files to disk")
-  .action(async (target: string, opts: { output: string; categories?: string; filter?: string; aesKey?: string; dryRun?: boolean }) => {
-    const spinner = ora(`Extracting assets from ${chalk.cyan(target)}...`).start();
+  .option("--json", "Print the extraction result as JSON to stdout")
+  .action(async (target: string, opts: { output: string; categories?: string; filter?: string; aesKey?: string; dryRun?: boolean; json?: boolean }) => {
+    const spinner = startSpinner(`Extracting assets from ${chalk.cyan(target)}...`, opts.json);
     try {
       const resolved = path.resolve(target);
       const outDir = path.resolve(opts.output);
-      const { adapter, engine } = await AdapterRegistry.resolveAdapter(resolved);
 
-      const categories = opts.categories
-        ? (opts.categories.split(",").map((c) => c.trim()) as AssetCategory[])
-        : undefined;
+      let categories;
+      if (opts.categories) {
+        const { valid, invalid } = validateCategories(
+          opts.categories.split(",").map((c) => c.trim()).filter((c) => c.length > 0)
+        );
+        if (invalid.length > 0) {
+          failCommand(
+            spinner,
+            opts.json,
+            `Unknown categories: ${invalid.join(", ")}. Valid categories: ${ASSET_CATEGORIES.join(", ")}`
+          );
+          return;
+        }
+        categories = valid;
+      }
+
+      const { adapter } = await AdapterRegistry.resolveAdapter(resolved);
 
       const result = await adapter.extract(resolved, {
         outputDir: outDir,
@@ -144,6 +190,15 @@ program
         aesKey: opts.aesKey,
         dryRun: opts.dryRun
       });
+
+      if (!result.success) {
+        process.exitCode = 1;
+      }
+
+      if (opts.json) {
+        printJson(result);
+        return;
+      }
 
       if (result.success) {
         spinner.succeed(
@@ -162,8 +217,7 @@ program
         }
       }
     } catch (err: unknown) {
-      spinner.fail(`Extraction failed: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      failCommand(spinner, opts.json, `Extraction failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
@@ -171,11 +225,16 @@ program
 program
   .command("rea-inspect <binary>")
   .description("Run deep binary reverse engineering scan (AES keys, IL2CPP metadata, and REA evidence bundle)")
-  .action(async (binary: string) => {
-    const spinner = ora(`Running REA deep binary scan on: ${chalk.cyan(binary)}...`).start();
+  .option("--json", "Print the scan result and evidence bundle as JSON to stdout")
+  .action(async (binary: string, opts: { json?: boolean }) => {
+    const spinner = startSpinner(`Running REA deep binary scan on: ${chalk.cyan(binary)}...`, opts.json);
     try {
       const resolved = path.resolve(binary);
       const { scan, bundle } = await ReaBridge.inspectBinary(resolved);
+      if (opts.json) {
+        printJson({ scan, bundle });
+        return;
+      }
       spinner.succeed(`Binary inspection complete.`);
 
       console.log();
@@ -220,8 +279,7 @@ program
       console.log(chalk.bold("────────────────────────────────────────"));
       console.log();
     } catch (err: unknown) {
-      spinner.fail(`Binary inspection failed: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      failCommand(spinner, opts.json, `Binary inspection failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 

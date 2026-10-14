@@ -1,10 +1,7 @@
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { BinaryScanner } from "./binary-scanner.js";
+import { runTool } from "../utils/exec.js";
 import type { BinaryScanResult } from "../types/index.js";
-
-const execAsync = promisify(exec);
 
 export interface ReaEvidenceBundle {
   targetBinary: string;
@@ -25,7 +22,7 @@ export class ReaBridge {
    */
   static async isReaAvailable(): Promise<boolean> {
     try {
-      await execAsync("rea --version");
+      await runTool("rea", ["--version"]);
       return true;
     } catch {
       return false;
@@ -86,8 +83,7 @@ export class ReaBridge {
 
     try {
       const task = taskDescription ?? "Extract AES encryption keys and analyze binary offsets";
-      const cmd = `rea inspect "${binaryPath}" --task "${task}"`;
-      const { stdout, stderr } = await execAsync(cmd);
+      const { stdout, stderr } = await runTool("rea", ["inspect", binaryPath, "--task", task]);
       return {
         success: true,
         output: stdout || stderr

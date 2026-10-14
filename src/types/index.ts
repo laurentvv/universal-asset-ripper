@@ -1,17 +1,20 @@
 export type EngineType = "unity" | "unreal" | "godot" | "pe-software" | "electron" | "unknown";
 
-export type AssetCategory =
-  | "texture"
-  | "mesh"
-  | "audio"
-  | "scene"
-  | "script"
-  | "shader"
-  | "font"
-  | "video"
-  | "animation"
-  | "config"
-  | "other";
+export const ASSET_CATEGORIES = [
+  "texture",
+  "mesh",
+  "audio",
+  "scene",
+  "script",
+  "shader",
+  "font",
+  "video",
+  "animation",
+  "config",
+  "other"
+] as const;
+
+export type AssetCategory = (typeof ASSET_CATEGORIES)[number];
 
 export interface EngineDetails {
   framework?: string;

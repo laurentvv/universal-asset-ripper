@@ -1,0 +1,6 @@
+config_version=5
+
+[application]
+config/name="RipperTest"
+run/main_scene="res://main.tscn"
+config/icon="res://icon.png"

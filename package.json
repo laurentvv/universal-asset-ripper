@@ -12,6 +12,7 @@
     "build": "tsc",
     "watch": "tsc --watch",
     "prepublishOnly": "npm run build",
+    "pretest": "npm run build",
     "start": "node ./dist/cli/index.js",
     "test": "vitest run",
     "test:watch": "vitest",

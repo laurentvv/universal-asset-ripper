@@ -63,21 +63,34 @@ export abstract class BaseEngineAdapter implements IEngineAdapter {
   }
 
   /**
-   * Filter assets based on ExtractOptions (categories, wildcard / regex filter)
+   * Single place where ExtractOptions (categories, substring filter, dry-run) are applied.
+   * `describe` maps an adapter-specific item to the AssetItem fields used for matching, so
+   * adapters filter on what inspect() reports.
    */
-  protected filterAssets(assets: AssetItem[], options: ExtractOptions): AssetItem[] {
-    let result = assets;
+  protected planExtraction<T>(
+    items: T[],
+    options: ExtractOptions,
+    describe: (item: T) => Pick<AssetItem, "path" | "category">
+  ): { selected: T[]; dryRun: boolean } {
+    let selected = items;
 
     if (options.categories && options.categories.length > 0) {
       const allowed = new Set(options.categories);
-      result = result.filter((a) => allowed.has(a.category));
+      selected = selected.filter((item) => allowed.has(describe(item).category));
     }
 
     if (options.filter) {
       const filterLower = options.filter.toLowerCase();
-      result = result.filter((a) => a.path.toLowerCase().includes(filterLower));
+      selected = selected.filter((item) => describe(item).path.toLowerCase().includes(filterLower));
     }
 
-    return result;
+    return { selected, dryRun: options.dryRun === true };
+  }
+
+  /**
+   * Filter assets based on ExtractOptions (categories, substring filter)
+   */
+  protected filterAssets(assets: AssetItem[], options: ExtractOptions): AssetItem[] {
+    return this.planExtraction(assets, options, (a) => a).selected;
   }
 }

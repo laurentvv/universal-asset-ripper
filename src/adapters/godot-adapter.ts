@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { BaseEngineAdapter } from "./engine-adapter.js";
-import { GodotPckParser, type PckFileEntry } from "../parsers/godot/pck-parser.js";
+import { GodotPckParser } from "../parsers/godot/pck-parser.js";
 import type {
   AssetItem,
   AssetManifest,
@@ -110,28 +110,19 @@ export class GodotAdapter extends BaseEngineAdapter {
       const manifest = await GodotPckParser.readManifest(source);
       if (!manifest) continue;
 
-      let fileEntries = manifest.files;
+      // Match categories/filter against the same AssetItem that inspect() reports
+      const { selected, dryRun } = this.planExtraction(
+        manifest.files,
+        options,
+        (fe) => GodotPckParser.toAssetItems([fe])[0]
+      );
 
-      // Apply category and string filters
-      if (options.categories && options.categories.length > 0) {
-        const allowedCats = new Set(options.categories);
-        fileEntries = fileEntries.filter((fe) => {
-          const asset = GodotPckParser.toAssetItems([fe])[0];
-          return allowedCats.has(asset.category);
-        });
-      }
-
-      if (options.filter) {
-        const f = options.filter.toLowerCase();
-        fileEntries = fileEntries.filter((fe) => fe.path.toLowerCase().includes(f));
-      }
-
-      if (options.dryRun) {
-        totalExtracted += fileEntries.length;
+      if (dryRun) {
+        totalExtracted += selected.length;
         continue;
       }
 
-      const res = await GodotPckParser.extractFiles(source, options.outputDir, fileEntries);
+      const res = await GodotPckParser.extractFiles(source, options.outputDir, selected);
       totalExtracted += res.extractedCount;
       errors.push(...res.errors);
     }

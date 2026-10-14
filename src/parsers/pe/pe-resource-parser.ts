@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { buildCursorFile, type CursorImage } from "./pe-resource-decoders.js";
 
 export interface PeSection {
   name: string;
@@ -25,7 +26,25 @@ export interface PeInfo {
   subsystem: number;
   sections: PeSection[];
   resources: PeResourceEntry[];
-  framework: "Delphi" | ".NET" | "Electron" | "Qt" | "Native C/C++" | "Unknown";
+  framework: "Delphi" | ".NET" | "Electron" | "Qt" | "Rust" | "Go" | "Native C/C++" | "Unknown";
+  /** .NET Core apphost found; true when a single-file bundle is attached (best effort) */
+  dotNetSingleFile?: boolean;
+}
+
+/** Signature that the .NET Core apphost keeps right after the (8 byte) bundle header offset */
+const DOTNET_BUNDLE_SIGNATURE = Buffer.from([
+  0x8b, 0x12, 0x02, 0xb9, 0x6a, 0x61, 0x20, 0x38, 0x72, 0x7b, 0x93, 0x02, 0x14, 0xd7, 0xa0, 0x32, 0x13, 0xf5, 0xb9,
+  0xe6, 0xef, 0xae, 0x33, 0x18, 0xee, 0x3b, 0x2d, 0xce, 0x24, 0xb3, 0x6a, 0xae
+]);
+
+const SAMPLE_HEAD_BYTES = 8 * 1024 * 1024;
+const SAMPLE_TAIL_BYTES = 1024 * 1024;
+
+export interface PeGroupExtractOptions {
+  /** Only build these groups (default: all) */
+  groups?: PeResourceEntry[];
+  /** Output file name for a group (default: `<prefix>_<nameOrId>.<ext>`) */
+  nameFor?: (group: PeResourceEntry) => string;
 }
 
 const RESOURCE_TYPE_NAMES: Record<number, string> = {
@@ -47,6 +66,69 @@ const RESOURCE_TYPE_NAMES: Record<number, string> = {
 };
 
 export class PeResourceParser {
+  /**
+   * Best-effort check for files that only an Electron app ships beside its executable
+   */
+  private static async hasElectronSiblings(exePath: string): Promise<boolean> {
+    const dir = path.dirname(exePath);
+    const markers = ["resources.pak", path.join("resources", "app.asar"), path.join("resources", "app")];
+    const exists = async (base: string): Promise<boolean> => {
+      for (const rel of markers) {
+        try {
+          await fs.access(path.join(base, rel));
+          return true;
+        } catch {
+          // Keep looking
+        }
+      }
+      return false;
+    };
+    if (await exists(dir)) return true;
+
+    // Squirrel/Inno layouts (e.g. VS Code) keep the payload in a versioned or hashed subfolder
+    try {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        if (entry.isDirectory() && (await exists(path.join(dir, entry.name)))) return true;
+      }
+    } catch {
+      // Ignore
+    }
+    return false;
+  }
+
+  /**
+   * Read the first 8MB and the last 1MB of the file (never the whole file)
+   */
+  private static async readSample(fileHandle: fs.FileHandle, size: number): Promise<Buffer> {
+    const headLen = Math.min(size, SAMPLE_HEAD_BYTES);
+    const head = Buffer.alloc(headLen);
+    await fileHandle.read(head, 0, headLen, 0);
+    if (size <= SAMPLE_HEAD_BYTES) return head;
+
+    const tailStart = Math.max(SAMPLE_HEAD_BYTES, size - SAMPLE_TAIL_BYTES);
+    const tailLen = size - tailStart;
+    const tail = Buffer.alloc(tailLen);
+    await fileHandle.read(tail, 0, tailLen, tailStart);
+    return Buffer.concat([head, Buffer.from([0]), tail]);
+  }
+
+  /**
+   * Delphi / C++Builder executables carry PACKAGEINFO / DVCLAL RCDATA resources and TPF0 forms
+   */
+  private static async hasDelphiResources(fileHandle: fs.FileHandle, resources: PeResourceEntry[]): Promise<boolean> {
+    const rcdata = resources.filter((r) => r.typeId === 10);
+    if (rcdata.some((r) => typeof r.nameOrId === "string" && ["PACKAGEINFO", "DVCLAL"].includes(r.nameOrId.toUpperCase()))) {
+      return true;
+    }
+    const magic = Buffer.alloc(4);
+    for (const r of rcdata.slice(0, 256)) {
+      if (r.size < 4) continue;
+      await fileHandle.read(magic, 0, 4, r.offset);
+      if (magic.readUInt32LE(0) === 0x30465054) return true;
+    }
+    return false;
+  }
+
   /**
    * Parse PE headers, sections, and resource directory tree
    */
@@ -165,22 +247,47 @@ export class PeResourceParser {
 
       // Detect Framework
       let framework: PeInfo["framework"] = "Native C/C++";
+      let dotNetSingleFile: boolean | undefined;
       if (isDotNet) {
         framework = ".NET";
       } else {
-        // Sample strings in binary for Delphi / Qt / Electron
-        const sampleSize = Math.min(Number(stat.size), 8 * 1024 * 1024);
-        const sampleBuf = Buffer.alloc(sampleSize);
-        await fileHandle.read(sampleBuf, 0, sampleSize, 0);
-        const sampleStr = sampleBuf.toString("latin1");
+        const sample = await this.readSample(fileHandle, Number(stat.size));
+        const sampleStr = sample.toString("latin1");
 
-        if (sampleStr.includes("Borland") || sampleStr.includes("Delphi") || sampleStr.includes("TPF0")) {
+        const bundleIdx = sample.indexOf(DOTNET_BUNDLE_SIGNATURE);
+        const delphiByResource = await this.hasDelphiResources(fileHandle, resources);
+
+        if (bundleIdx >= 0) {
+          framework = ".NET";
+          dotNetSingleFile = bundleIdx >= 8 && sample.readBigUInt64LE(bundleIdx - 8) !== 0n;
+        } else if (delphiByResource) {
           framework = "Delphi";
-        } else if (sampleStr.includes("electron.app") || sampleStr.includes("v8_context_snapshot.bin")) {
+        } else if (
+          sampleStr.includes("electron.app") ||
+          sampleStr.includes("v8_context_snapshot.bin") ||
+          sampleStr.includes("ELECTRON_RUN_AS_NODE")
+        ) {
           framework = "Electron";
-        } else if (sampleStr.includes("Qt5Core.dll") || sampleStr.includes("Qt6Core.dll") || sampleStr.includes("QtCore")) {
+        } else if (/Qt[3-6]Core/i.test(sampleStr) || sampleStr.includes("qt_resource")) {
+          framework = "Qt";
+        } else if (sampleStr.includes("rust_begin_unwind") || sampleStr.includes("/rustc/")) {
+          framework = "Rust";
+        } else if (
+          sampleStr.includes("Go build ID") ||
+          sampleStr.includes("Go buildinf:") ||
+          sampleStr.includes("runtime.main")
+        ) {
+          framework = "Go";
+        } else if (sampleStr.includes("Borland") || sampleStr.includes("Delphi") || sampleStr.includes("TPF0")) {
+          framework = "Delphi";
+        } else if (sampleStr.includes("QtCore")) {
           framework = "Qt";
         }
+      }
+
+      // Electron apps ship Chromium's resources.pak / app.asar next to the executable
+      if (framework === "Native C/C++" && (await this.hasElectronSiblings(filePath))) {
+        framework = "Electron";
       }
 
       return {
@@ -189,7 +296,8 @@ export class PeResourceParser {
         subsystem: peBuf.readUInt16LE(24 + (isPE32Plus ? 68 : 68)),
         sections,
         resources,
-        framework
+        framework,
+        ...(dotNetSingleFile !== undefined ? { dotNetSingleFile } : {})
       };
     } catch {
       return null;
@@ -287,25 +395,37 @@ export class PeResourceParser {
   }
 
   /**
+   * Index single-image resources (RT_ICON / RT_CURSOR) by id; the group language is preferred
+   */
+  private static indexImages(resources: PeResourceEntry[], typeId: number) {
+    const byId = new Map<number, PeResourceEntry[]>();
+    for (const r of resources) {
+      if (r.typeId === typeId && typeof r.nameOrId === "number") {
+        const list = byId.get(r.nameOrId) ?? [];
+        list.push(r);
+        byId.set(r.nameOrId, list);
+      }
+    }
+    return (id: number, languageId: number): PeResourceEntry | undefined => {
+      const list = byId.get(id);
+      return list?.find((r) => r.languageId === languageId) ?? list?.[0];
+    };
+  }
+
+  /**
    * Reconstruct standalone Windows .ico files from RT_GROUP_ICON and RT_ICON resources
    */
   static async extractIcons(
     filePath: string,
-    resources: PeResourceEntry[]
-  ): Promise<Array<{ name: string; buffer: Buffer }>> {
-    const groupIcons = resources.filter((r) => r.typeId === 14); // RT_GROUP_ICON
-    const singleIcons = new Map<number, PeResourceEntry>();
-
-    for (const r of resources) {
-      if (r.typeId === 3 && typeof r.nameOrId === "number") {
-        singleIcons.set(r.nameOrId, r);
-      }
-    }
-
+    resources: PeResourceEntry[],
+    options: PeGroupExtractOptions = {}
+  ): Promise<Array<{ name: string; buffer: Buffer; group: PeResourceEntry }>> {
+    const groupIcons = options.groups ?? resources.filter((r) => r.typeId === 14); // RT_GROUP_ICON
     if (groupIcons.length === 0) return [];
+    const findIcon = this.indexImages(resources, 3);
 
     let fileHandle: fs.FileHandle | undefined;
-    const icons: Array<{ name: string; buffer: Buffer }> = [];
+    const icons: Array<{ name: string; buffer: Buffer; group: PeResourceEntry }> = [];
 
     try {
       fileHandle = await fs.open(filePath, "r");
@@ -327,7 +447,7 @@ export class PeResourceParser {
         for (let i = 0; i < count; i++) {
           const entryOff = 6 + i * 14;
           const iconId = grpBuf.readUInt16LE(entryOff + 12);
-          const iconRes = singleIcons.get(iconId);
+          const iconRes = findIcon(iconId, grp.languageId);
 
           if (!iconRes) continue;
 
@@ -353,13 +473,73 @@ export class PeResourceParser {
 
           const fullIco = Buffer.concat([header, ...dirEntries, ...imageBuffers]);
           icons.push({
-            name: `icon_${grp.nameOrId}.ico`,
-            buffer: fullIco
+            name: options.nameFor ? options.nameFor(grp) : `icon_${grp.nameOrId}.ico`,
+            buffer: fullIco,
+            group: grp
           });
         }
       }
 
       return icons;
+    } finally {
+      if (fileHandle) {
+        await fileHandle.close();
+      }
+    }
+  }
+
+  /**
+   * Reconstruct standalone .cur files from RT_GROUP_CURSOR and RT_CURSOR resources
+   */
+  static async extractCursors(
+    filePath: string,
+    resources: PeResourceEntry[],
+    options: PeGroupExtractOptions = {}
+  ): Promise<Array<{ name: string; buffer: Buffer; group: PeResourceEntry }>> {
+    const groups = options.groups ?? resources.filter((r) => r.typeId === 12); // RT_GROUP_CURSOR
+    if (groups.length === 0) return [];
+    const findCursor = this.indexImages(resources, 1);
+
+    let fileHandle: fs.FileHandle | undefined;
+    const cursors: Array<{ name: string; buffer: Buffer; group: PeResourceEntry }> = [];
+
+    try {
+      fileHandle = await fs.open(filePath, "r");
+
+      for (const grp of groups) {
+        const grpBuf = Buffer.alloc(grp.size);
+        await fileHandle.read(grpBuf, 0, grp.size, grp.offset);
+        if (grpBuf.length < 6) continue;
+        const count = grpBuf.readUInt16LE(4);
+        if (grpBuf.length < 6 + count * 14) continue;
+
+        const images: CursorImage[] = [];
+        for (let i = 0; i < count; i++) {
+          // GRPCURSORDIRENTRY: width(2) height(2) planes(2) bitCount(2) bytesInRes(4) id(2)
+          const entryOff = 6 + i * 14;
+          const cursorRes = findCursor(grpBuf.readUInt16LE(entryOff + 12), grp.languageId);
+          if (!cursorRes) continue;
+
+          const payload = Buffer.alloc(cursorRes.size);
+          await fileHandle.read(payload, 0, cursorRes.size, cursorRes.offset);
+          images.push({
+            width: grpBuf.readUInt16LE(entryOff),
+            height: grpBuf.readUInt16LE(entryOff + 2),
+            payload
+          });
+        }
+
+        const cur = buildCursorFile(images);
+        if (cur) {
+          cursors.push({
+            name: options.nameFor ? options.nameFor(grp) : `cursor_${grp.nameOrId}.cur`,
+            buffer: cur,
+            group: grp
+          });
+        }
+      }
+
+      return cursors;
     } finally {
       if (fileHandle) {
         await fileHandle.close();

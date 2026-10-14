@@ -64,11 +64,11 @@ export class EngineDetector {
       };
     }
 
-    // 2. Check Unreal Engine (.pak)
+    // 2. Check Unreal Engine (.pak): only a real FPakInfo footer counts (Chromium/Electron .pak files do not have one)
     if (ext === ".pak") {
       const pakInfo = await UnrealPakParser.readPakInfo(filePath);
-      markersFound.push("Unreal .pak container");
       if (pakInfo) {
+        markersFound.push("Unreal .pak container");
         markersFound.push(`Unreal FPakInfo (v${pakInfo.version})`);
         return {
           engine: "unreal",
@@ -84,13 +84,6 @@ export class EngineDetector {
           }
         };
       }
-      return {
-        engine: "unreal",
-        confidence: 0.85,
-        containerType: "Unreal PAK",
-        targetPath: filePath,
-        details: { markersFound, detectedFiles }
-      };
     }
 
     // 3. Check Unreal Zen Store containers (.utoc, .ucas)
@@ -153,6 +146,20 @@ export class EngineDetector {
         };
       }
 
+      // An executable next to its own engine data (not just any sibling) inherits that engine
+      const sibling = ext === ".exe" ? await this.detectOwnData(filePath) : null;
+      if (sibling) {
+        return {
+          ...sibling,
+          targetPath: filePath,
+          arch,
+          details: {
+            ...sibling.details,
+            detectedFiles: [filePath, ...sibling.details.detectedFiles]
+          }
+        };
+      }
+
       // Check generic Windows PE software executable
       const peInfo = await PeResourceParser.parse(filePath);
       if (peInfo) {
@@ -181,24 +188,6 @@ export class EngineDetector {
       }
     }
 
-    // Fallback: check sibling files if single file is in a folder
-    try {
-      const parentDir = path.dirname(filePath);
-      const parentDetection = await this.detectDirectory(parentDir, 2);
-      if (parentDetection.engine !== "unknown") {
-        return {
-          ...parentDetection,
-          targetPath: filePath,
-          details: {
-            ...parentDetection.details,
-            detectedFiles: [filePath, ...parentDetection.details.detectedFiles]
-          }
-        };
-      }
-    } catch {
-      // Ignore
-    }
-
     return {
       engine: "unknown",
       confidence: 0.1,
@@ -209,6 +198,34 @@ export class EngineDetector {
         detectedFiles
       }
     };
+  }
+
+  /**
+   * For a game executable, check that it sits next to its own engine data:
+   * Unity: UnityPlayer.dll beside it or a "<name>_Data" folder; Unreal: "<name>-Win64-Shipping.exe".
+   */
+  private static async detectOwnData(exePath: string): Promise<EngineDetectionResult | null> {
+    const dir = path.dirname(exePath);
+    const base = path.basename(exePath, path.extname(exePath));
+    try {
+      if (base.toLowerCase().endsWith("-win64-shipping")) {
+        return {
+          engine: "unreal",
+          confidence: 0.7,
+          targetPath: dir,
+          details: { markersFound: [`Unreal shipping executable: ${path.basename(exePath)}`], detectedFiles: [] }
+        };
+      }
+      const entries = await fs.readdir(dir);
+      const lower = new Set(entries.map((e) => e.toLowerCase()));
+      if (lower.has("unityplayer.dll") || lower.has(`${base.toLowerCase()}_data`)) {
+        const result = await this.detectDirectory(dir, 1);
+        if (result.engine === "unity") return result;
+      }
+    } catch {
+      // Ignore
+    }
+    return null;
   }
 
   /**
@@ -223,6 +240,10 @@ export class EngineDetector {
     let unityScore = 0;
     let unrealScore = 0;
     let godotScore = 0;
+
+    // Generic folder names (*_Data, Content, Engine) only count once a corroborating marker is found
+    let unityCorroborated = false;
+    let unrealCorroborated = false;
 
     let isIL2CPP = false;
     let isMono = false;
@@ -246,30 +267,43 @@ export class EngineDetector {
         // --- UNITY CHECKS ---
         if (lower === "unityplayer.dll") {
           unityScore += 50;
+          unityCorroborated = true;
           markersFound.push("UnityPlayer.dll");
         }
         if (lower === "gameassembly.dll") {
           unityScore += 40;
+          unityCorroborated = true;
           isIL2CPP = true;
           markersFound.push("GameAssembly.dll (IL2CPP runtime)");
         }
         if (lower === "data.unity3d") {
           unityScore += 30;
+          unityCorroborated = true;
           markersFound.push("data.unity3d");
         }
 
         // --- UNREAL CHECKS ---
         if (lower.endsWith(".pak")) {
-          unrealScore += 35;
-          markersFound.push(`Unreal PAK: ${entry.name}`);
-          detectedContainer = "PAK";
+          // Only a pak with a real FPakInfo footer counts (Chromium/Electron resources.pak does not)
           const pakInfo = await UnrealPakParser.readPakInfo(fullPath);
-          if (pakInfo?.isEncrypted) {
-            isEncrypted = true;
+          if (pakInfo) {
+            unrealScore += 35;
+            unrealCorroborated = true;
+            markersFound.push(`Unreal PAK: ${entry.name}`);
+            detectedContainer = "PAK";
+            if (pakInfo.isEncrypted) {
+              isEncrypted = true;
+            }
           }
+        }
+        if (lower.endsWith(".uproject") || lower.endsWith("-win64-shipping.exe")) {
+          unrealScore += 40;
+          unrealCorroborated = true;
+          markersFound.push(`Unreal project/executable: ${entry.name}`);
         }
         if (lower.endsWith(".utoc") || lower.endsWith(".ucas")) {
           unrealScore += 40;
+          unrealCorroborated = true;
           markersFound.push(`Unreal Zen Store: ${entry.name}`);
           detectedContainer = "IoStore (.utoc/.ucas)";
           detectedVersion = "Unreal Engine 5 / 4.26+";
@@ -277,11 +311,11 @@ export class EngineDetector {
 
         // --- GODOT CHECKS ---
         if (lower.endsWith(".pck")) {
-          godotScore += 50;
-          markersFound.push(`Godot PCK: ${entry.name}`);
-          detectedContainer = "PCK";
           const pckManifest = await GodotPckParser.readManifest(fullPath);
           if (pckManifest) {
+            godotScore += 50;
+            markersFound.push(`Godot PCK: ${entry.name}`);
+            detectedContainer = "PCK";
             detectedVersion = `${pckManifest.header.engineMajor}.${pckManifest.header.engineMinor}.${pckManifest.header.enginePatch}`;
             markersFound.push(`Godot PCK v${pckManifest.header.formatVersion} (Engine ${detectedVersion})`);
           }
@@ -300,7 +334,7 @@ export class EngineDetector {
       } else if (entry.isDirectory()) {
         // --- UNITY FOLDER CHECKS ---
         if (lower.endsWith("_data")) {
-          unityScore += 40;
+          unityScore += 10;
           markersFound.push(`Unity Data Folder: ${entry.name}`);
 
           // Look inside _Data folder
@@ -310,6 +344,7 @@ export class EngineDetector {
               const dfLower = df.toLowerCase();
               if (dfLower === "globalgamemanagers") {
                 unityScore += 20;
+                unityCorroborated = true;
                 markersFound.push("globalgamemanagers");
               }
               if (dfLower === "managed") {
@@ -333,6 +368,7 @@ export class EngineDetector {
 
         if (lower === "monobleedingedge") {
           unityScore += 25;
+          unityCorroborated = true;
           isMono = true;
           markersFound.push("MonoBleedingEdge runtime");
         }
@@ -350,15 +386,18 @@ export class EngineDetector {
             for (const cf of subEntries) {
               const cfLower = cf.toLowerCase();
               if (cfLower.endsWith(".pak")) {
+                const pakInfo = await UnrealPakParser.readPakInfo(cf);
+                if (!pakInfo) continue;
                 unrealScore += 40;
+                unrealCorroborated = true;
                 markersFound.push(`Unreal PAK: ${path.basename(cf)}`);
                 detectedContainer = "PAK";
-                const pakInfo = await UnrealPakParser.readPakInfo(cf);
-                if (pakInfo?.isEncrypted) isEncrypted = true;
+                if (pakInfo.isEncrypted) isEncrypted = true;
                 break;
               }
               if (cfLower.endsWith(".utoc") || cfLower.endsWith(".ucas")) {
                 unrealScore += 45;
+                unrealCorroborated = true;
                 markersFound.push(`Unreal Zen Store: ${path.basename(cf)}`);
                 detectedContainer = "IoStore (.utoc/.ucas)";
                 detectedVersion = "Unreal Engine 5 / 4.26+";
@@ -390,6 +429,10 @@ export class EngineDetector {
     // Determine winning engine
     let engine: EngineType = "unknown";
     let confidence = 0;
+
+    // Uncorroborated generic markers cannot win
+    if (!unityCorroborated) unityScore = 0;
+    if (!unrealCorroborated) unrealScore = 0;
 
     if (unityScore > unrealScore && unityScore > godotScore && unityScore >= 20) {
       engine = "unity";

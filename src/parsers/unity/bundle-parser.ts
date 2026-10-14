@@ -32,32 +32,40 @@ export class UnityBundleParser {
         const sigLen = signatureStr.length + 1; // null-terminated
         const formatVersion = headerBuf.readUInt32BE(sigLen);
 
-        // Unity version string null-terminated
-        const unityVerStart = sigLen + 4;
-        const nullIdx = headerBuf.indexOf(0, unityVerStart);
-        const engineVersion = nullIdx > unityVerStart
-          ? headerBuf.subarray(unityVerStart, nullIdx).toString("ascii")
-          : "Unknown";
+        // Two null-terminated strings follow: the minimum player version ("5.x.x")
+        // and the real engine version/revision ("2021.3.16f1")
+        const minPlayerVersion = this.readCString(headerBuf, sigLen + 4);
+        const engineVersion = minPlayerVersion
+          ? this.readCString(headerBuf, sigLen + 4 + minPlayerVersion.length + 1)
+          : undefined;
 
         return {
           signature: signatureStr,
           formatVersion,
-          engineVersion,
+          engineVersion: engineVersion || minPlayerVersion || "Unknown",
+          minPlayerVersion: minPlayerVersion || undefined,
           size: BigInt(stat.size)
         };
       }
 
-      // Check SerializedFile (usually starts with metadataSize, fileSize in Big-Endian)
-      // SerializedFile header has version at offset 8 (or 12 in 64-bit format)
-      // Usually version is between 9 and 22 for Unity 4 to Unity 2022/6
+      // SerializedFile header is Big-Endian: metadataSize, fileSize, version, dataOffset (v9-21).
+      // v22+ zeroes those legacy fields and stores metadataSize(u32@16), fileSize(i64@20), dataOffset(i64@28).
+      // The version range alone also matches PNG and other formats, so the stored size must equal the real one.
       const possibleVer = headerBuf.readUInt32BE(8);
-      if (possibleVer >= 9 && possibleVer <= 30) {
-        return {
-          signature: "SerializedFile",
-          formatVersion: possibleVer,
-          engineVersion: `Unity Serialized v${possibleVer}`,
-          size: BigInt(stat.size)
-        };
+      if (possibleVer >= 9 && possibleVer <= 21) {
+        const metadataSize = headerBuf.readUInt32BE(0);
+        const fileSize = headerBuf.readUInt32BE(4);
+        const dataOffset = headerBuf.readUInt32BE(12);
+        if (fileSize === stat.size && metadataSize <= fileSize && dataOffset <= fileSize) {
+          return this.serializedInfo(possibleVer, stat.size);
+        }
+      } else if (possibleVer >= 22 && possibleVer <= 30) {
+        const metadataSize = headerBuf.readUInt32BE(16);
+        const fileSize = headerBuf.readBigUInt64BE(20);
+        const dataOffset = headerBuf.readBigUInt64BE(28);
+        if (fileSize === BigInt(stat.size) && BigInt(metadataSize) <= fileSize && dataOffset <= fileSize) {
+          return this.serializedInfo(possibleVer, stat.size);
+        }
       }
 
       return null;
@@ -68,5 +76,20 @@ export class UnityBundleParser {
         await fileHandle.close();
       }
     }
+  }
+
+  private static serializedInfo(version: number, size: number): UnityBundleInfo {
+    return {
+      signature: "SerializedFile",
+      formatVersion: version,
+      engineVersion: `Unity Serialized v${version}`,
+      size: BigInt(size)
+    };
+  }
+
+  private static readCString(buf: Buffer, start: number): string {
+    if (start >= buf.length) return "";
+    const end = buf.indexOf(0, start);
+    return buf.subarray(start, end > start ? end : start).toString("ascii");
   }
 }

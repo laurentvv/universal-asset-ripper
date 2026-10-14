@@ -1,10 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { BaseEngineAdapter } from "./engine-adapter.js";
 import { UnrealPakParser, type UnrealPakInfo } from "../parsers/unreal/pak-parser.js";
-import { categorizeExtension, listFilesRecursively } from "../utils/file-utils.js";
+import { listFilesRecursively } from "../utils/file-utils.js";
+import { runTool } from "../utils/exec.js";
 import type {
   AssetItem,
   AssetManifest,
@@ -12,8 +11,6 @@ import type {
   ExtractOptions,
   ExtractionResult
 } from "../types/index.js";
-
-const execAsync = promisify(exec);
 
 export class UnrealAdapter extends BaseEngineAdapter {
   readonly engine: EngineType = "unreal";
@@ -23,17 +20,18 @@ export class UnrealAdapter extends BaseEngineAdapter {
       const stat = await fs.stat(targetPath);
       if (stat.isFile()) {
         const ext = path.extname(targetPath).toLowerCase();
-        if (ext === ".pak" || ext === ".utoc" || ext === ".ucas") return true;
+        if (ext === ".utoc" || ext === ".ucas") return true;
         const pakInfo = await UnrealPakParser.readPakInfo(targetPath);
         return pakInfo !== null;
       }
       if (stat.isDirectory()) {
-        const files = await fs.readdir(targetPath);
+        // Engine/Content folders alone are not enough: require a real container or project marker
+        const files = await listFilesRecursively(targetPath, 4);
         for (const f of files) {
           const lower = f.toLowerCase();
-          if (lower.endsWith(".pak") || lower === "engine" || lower === "content") {
-            return true;
-          }
+          if (lower.endsWith(".utoc") || lower.endsWith(".ucas") || lower.endsWith(".uproject")) return true;
+          if (lower.endsWith("-win64-shipping.exe")) return true;
+          if (lower.endsWith(".pak") && (await UnrealPakParser.readPakInfo(f)) !== null) return true;
         }
       }
       return false;
@@ -97,44 +95,72 @@ export class UnrealAdapter extends BaseEngineAdapter {
    */
   private async isRepakAvailable(): Promise<boolean> {
     try {
-      await execAsync("repak --version");
+      await runTool("repak", ["--version"]);
       return true;
     } catch {
       return false;
     }
   }
 
+  /**
+   * repak takes global options (--aes-key) BEFORE the subcommand
+   */
+  private repakArgs(subcommand: string[], aesKey?: string): string[] {
+    return aesKey ? ["--aes-key", aesKey, ...subcommand] : subcommand;
+  }
+
   async extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult> {
     const startTime = Date.now();
-    const containers = await this.findUnrealContainers(targetPath);
+    const allContainers = await this.findUnrealContainers(targetPath);
     const errors: Array<{ file: string; error: string }> = [];
     let extractedCount = 0;
 
-    await fs.mkdir(options.outputDir, { recursive: true });
+    // Containers are matched like inspect() reports them (relative path, category "other")
+    const { selected: containers, dryRun } = this.planExtraction(allContainers, options, (c) => ({
+      path: path.relative(targetPath, c) || path.basename(c),
+      category: "other"
+    }));
+
     const hasRepak = await this.isRepakAvailable();
+    if (!dryRun) {
+      await fs.mkdir(options.outputDir, { recursive: true });
+    }
 
     for (const container of containers) {
       const ext = path.extname(container).toLowerCase();
-      if (ext === ".pak" && hasRepak) {
-        try {
-          const keyArg = options.aesKey ? `-k "${options.aesKey}"` : "";
-          const cmd = `repak unpack ${keyArg} "${container}" -o "${options.outputDir}"`;
-          await execAsync(cmd);
-          extractedCount++;
-        } catch (err: unknown) {
-          errors.push({
-            file: container,
-            error: err instanceof Error ? err.message : String(err)
-          });
+
+      if (ext === ".utoc" || ext === ".ucas") {
+        errors.push({
+          file: container,
+          error: "Unsupported: IoStore containers (.utoc/.ucas) cannot be unpacked yet (repak handles .pak only)."
+        });
+        continue;
+      }
+
+      if (!hasRepak) {
+        errors.push({
+          file: container,
+          error: "repak CLI is not installed in PATH. Install via 'cargo install repak' to unpack encrypted/compressed Unreal .pak containers."
+        });
+        continue;
+      }
+
+      try {
+        if (dryRun) {
+          // List only: count the entries repak would unpack
+          const { stdout } = await runTool("repak", this.repakArgs(["list", container], options.aesKey));
+          extractedCount += stdout.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+        } else {
+          const before = (await listFilesRecursively(options.outputDir, 64)).length;
+          await runTool("repak", this.repakArgs(["unpack", container, "-o", options.outputDir], options.aesKey));
+          const after = (await listFilesRecursively(options.outputDir, 64)).length;
+          extractedCount += Math.max(0, after - before);
         }
-      } else {
-        // Fallback or tool notification
-        if (!hasRepak) {
-          errors.push({
-            file: container,
-            error: "repak CLI is not installed in PATH. Install via 'cargo install repak' to unpack encrypted/compressed Unreal .pak containers."
-          });
-        }
+      } catch (err: unknown) {
+        errors.push({
+          file: container,
+          error: err instanceof Error ? err.message : String(err)
+        });
       }
     }
 
