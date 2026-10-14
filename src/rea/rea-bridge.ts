@@ -45,9 +45,9 @@ export class ReaBridge {
       `Target: ${path.basename(binaryPath)} (${scan.arch})`,
       scan.candidateAesKeys.length > 0
         ? `Candidate AES keys detected: ${scan.candidateAesKeys.map((k) => k.keyHex).join(", ")}`
-        : "No direct AES keys in plaintext; trace FAES::Decrypt or encryption dispatcher.",
+        : "No direct AES keys in plaintext; trace FAES::Decrypt via Ghidra or hook dynamically with Frida.",
       scan.il2cppMetadata
-        ? `IL2CPP metadata detected (version ${scan.il2cppMetadata.version}). Trace il2cpp_init or metadata registration.`
+        ? `IL2CPP metadata detected (version ${scan.il2cppMetadata.version}). Reconstruct CIL bytecode with Cpp2IL or trace il2cpp_init.`
         : "Standard native binary.",
       "Objective: Confirm decryption keys / recovery offsets."
     ].join("\n");

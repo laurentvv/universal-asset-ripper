@@ -92,11 +92,22 @@ Adapters aggregate asset items into unified categories:
   - Validates IL2CPP `global-metadata.dat` magic (`0xFAB11BAF`) and extracts metadata version.
 * **`ReaBridge`**:
   - Generates structured *Evidence Bundles* conforming to the `morluto/rea` agent protocol.
-  - Interfaces with the `rea` CLI and AI agent decompiler workflows (Ghidra, Hopper, IDA).
+  - Interfaces with the `rea` CLI and AI agent decompiler workflows (Ghidra, Cpp2IL, JADX, Frida, Hopper, IDA).
 
-### 3.5. Model Context Protocol (MCP) Server (`src/mcp/server.ts`)
+### 3.5. External Reverse Engineering Toolchain Ecosystem
+When automated heuristics and native parsers encounter locked or obfuscated containers:
+* **`morluto/rea`**: High-level reasoning and agentic workflow orchestration.
+* **`Ghidra`**: Static binary decompilation of shipping native executables and libraries.
+* **`Cpp2IL`**: Ahead-of-Time Unity IL2CPP deobfuscation and CIL bytecode reconstruction.
+* **`JADX`**: Dalvik/ART Dex-to-Java decompilation for Android packages (`.apk`).
+* **`Frida`**: Dynamic instrumentation and memory interception of runtime keys and buffers.
+
+### 3.6. Model Context Protocol (MCP) Server (`src/mcp/server.ts`)
 Exposes four tools over JSON-RPC stdio:
 1. `ripper_detect`: Returns engine type, confidence, version, architecture, and signature markers.
 2. `ripper_inspect`: Returns complete file count and size breakdowns by category.
 3. `ripper_extract`: Performs asset extraction with category filtering and AES key injection.
 4. `ripper_scan_binary`: Runs deep binary analysis for candidate AES keys and IL2CPP metadata.
+
+### 3.7. Downstream Ecosystem: Creative Game Modding (`universal-modder`)
+Extracted assets and decrypted structures directly empower downstream modding agent suites like **[rehan-remade/universal-modder](https://github.com/rehan-remade/universal-modder)**. While Universal Asset Ripper handles the upstream reconnaissance and extraction layer, `universal-modder` consumes these assets to drive AI asset generation (fal.ai / ComfyUI), code injection, and automated in-game verification.

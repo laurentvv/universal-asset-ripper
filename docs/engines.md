@@ -24,6 +24,12 @@ This document describes internal container structures, extraction workflows, and
 * [AssetRipper](https://github.com/AssetRipper/AssetRipper):
   - CLI installation: `dotnet tool install -g AssetRipper.Cli`
   - Fully converts Unity assets into standard glTF, FBX, WAV, PNG, and rebuilds complete Unity project hierarchies.
+* [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL):
+  - In-depth reverse engineering tool for Unity IL2CPP builds.
+  - Unlike `Il2CppDumper` (which only recovers signatures and empty dummy DLLs with `throw null;`), **Cpp2IL** analyzes machine code in `GameAssembly.dll` and reconstructs executable **CIL bytecode** within method bodies.
+  - Produces valid .NET assemblies that can be decompiled into readable C# using [dnSpy](https://github.com/dnSpy/dnSpy) or [ILSpy](https://github.com/icsharpcode/ILSpy).
+* [Il2CppDumper](https://github.com/Perfare/Il2CppDumper):
+  - Fast extraction of type declarations, string literals, method addresses, and symbol scripts for Ghidra / IDA.
 
 ---
 
@@ -49,6 +55,24 @@ When packages are encrypted, an AES-256 key is required.
   ```bash
   ripper extract Content/Paks/PakChunk0.pak -o extracted/ --aes-key 0xYOUR_HEX_KEY
   ```
+
+### Advanced Key Recovery (Static & Dynamic)
+* **Static Analysis with [Ghidra](https://github.com/NationalSecurityAgency/ghidra)**:
+  - If the key is obfuscated or compiled via custom templates, load `<Game>-Win64-Shipping.exe` in Ghidra.
+  - Search for references to strings like `AES_set_decrypt_key`, `FPakPlatformFile`, or `FEncryptionKeyRegistration`.
+* **Dynamic Hooking with [Frida](https://github.com/frida/frida)**:
+  - For games with heavy anti-reverse or dynamic key derivation, attach Frida to the running game process to intercept the decryption key directly from memory as it is passed to the decryption routine:
+    ```javascript
+    // Example: hook AES key parameter in runtime memory
+    const decryptFunc = Module.findExportByName(null, "AES_set_decrypt_key");
+    if (decryptFunc) {
+      Interceptor.attach(decryptFunc, {
+        onEnter(args) {
+          console.log("[Frida] AES Key buffer:", hexdump(args[0], { length: 32 }));
+        }
+      });
+    }
+    ```
 
 ### Recommended External Tooling
 * [repak](https://github.com/trumank/repak):
@@ -82,3 +106,25 @@ ripper extract Game.exe -o extracted/
 ### Script & Scene Restoration
 * [GDRE Tools](https://github.com/bruvzg/gdsdecomp):
   - Headless Godot fork capable of decompiling compiled GDScript bytecode (`.gdc`) and restoring `.tscn` text scenes.
+
+---
+
+## 4. Mobile & Android Containers (APK / AAB / XAPK)
+
+### Structure & Ripping Challenges
+* Android games package standard engine assets into ZIP containers:
+  - Bytecode: `classes.dex` (Dalvik / ART)
+  - Native Engine Binaries: `lib/<arch>/` (`libunity.so`, `libil2cpp.so`, `libUE4.so`, `libgodot_android.so`)
+  - Assets & Containers: `assets/`, `res/`, or external expansion files (`.obb`)
+* Many games protect asset decryption keys in Java wrapper code, or through JNI bridges connecting to native libraries.
+
+### Recommended Tooling
+* [JADX](https://github.com/skylot/jadx):
+  - High quality Dex-to-Java decompiler with GUI and CLI (`jadx -d out/ app.apk`).
+  - Decodes `AndroidManifest.xml`, resource tables, and Dalvik bytecode back to readable Java/Kotlin code.
+  - Indispensable for identifying how assets are decrypted before being fed into native engine runtimes.
+* [Frida](https://github.com/frida/frida):
+  - Dynamic instrumentation on Android devices / emulators (`frida-server` or `frida-gadget`).
+  - Allows hooking JNI functions, bypassing SSL pinning, and dumping decrypted asset buffers directly from memory.
+* [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL) + [Ghidra](https://github.com/NationalSecurityAgency/ghidra):
+  - For Unity IL2CPP games on Android, run Cpp2IL against `lib/arm64-v8a/libil2cpp.so` + `assets/bin/Data/Managed/Metadata/global-metadata.dat` to extract full C# game code.

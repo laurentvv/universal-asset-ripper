@@ -184,7 +184,7 @@ export class BinaryScanner {
                 version: res.version,
                 offset: 0
               };
-              recommendations.push(`Found IL2CPP global-metadata.dat v${res.version}. Use Il2CppDumper or REA agent.`);
+              recommendations.push(`Found IL2CPP global-metadata.dat v${res.version}. Reconstruct CIL bytecode with Cpp2IL (SamboyCoding/Cpp2IL) or dump signatures with Il2CppDumper / REA.`);
               break;
             }
           }
@@ -196,7 +196,7 @@ export class BinaryScanner {
       if (candidateAesKeys.length > 0) {
         recommendations.push(`Detected ${candidateAesKeys.length} candidate AES-256 keys. Test them with 'ripper extract <pak> --aes-key <key>'`);
       } else {
-        recommendations.push("No obvious plaintext AES key found. Consider using REA Ghidra/Hopper agent to trace FAES::Decrypt calls.");
+        recommendations.push("No obvious plaintext AES key found. Consider using Ghidra (static decompilation) or Frida (dynamic runtime hooking of FAES::Decrypt).");
       }
 
       return {
