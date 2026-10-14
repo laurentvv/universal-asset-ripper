@@ -19,6 +19,8 @@ Run the built-in scanner to identify candidate keys and architectural properties
 ripper rea-inspect path/to/Game-Win64-Shipping.exe
 ```
 
+Options: `--pak <file>` verifies each candidate against an Unreal pak (decrypts the index, mount point check; verified keys sorted first), `--bundle <file>` writes the evidence bundle, `--json` prints `{ scan, bundle }`. The whole file is scanned in overlapping chunks; hex runs longer than 64 chars, counting tables, low-entropy and repeated-block strings are dropped, and the output states `N candidates, showing M`.
+
 ### What `BinaryScanner` Analyzes:
 1. **Shannon Entropy Analysis:** Identifies 32-byte (256-bit) blocks of high randomness characteristic of cryptographic keys.
 2. **Hex Pattern Matching:** Detects strings matching 64-character hexadecimal patterns (`0x[A-Fa-f0-9]{64}`).

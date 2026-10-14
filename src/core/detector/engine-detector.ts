@@ -5,7 +5,10 @@ import { listFilesRecursively, parsePeHeaderArch } from "../../utils/file-utils.
 import { GodotPckParser } from "../../parsers/godot/pck-parser.js";
 import { UnrealPakParser } from "../../parsers/unreal/pak-parser.js";
 import { UnityBundleParser } from "../../parsers/unity/bundle-parser.js";
-import { PeResourceParser } from "../../parsers/pe/pe-resource-parser.js";
+import { PeResourceParser, type PeInfo } from "../../parsers/pe/pe-resource-parser.js";
+import { AsarParser } from "../../parsers/electron/asar-parser.js";
+import { ChromiumPakParser } from "../../parsers/electron/chromium-pak.js";
+import { findElectronPayload } from "../../parsers/electron/electron-layout.js";
 
 export class EngineDetector {
   /**
@@ -55,9 +58,10 @@ export class EngineDetector {
         details: {
           markersFound,
           detectedFiles,
+          encrypted: (godotPck.header.flags & 1) !== 0,
           notes: [
             `Format Version: ${godotPck.header.formatVersion}`,
-            `Files indexed: ${godotPck.files.length}`,
+            `Files indexed: ${godotPck.files.length}${godotPck.directoryError ? ` (${godotPck.directoryError})` : ""}`,
             `Embedded in executable: ${godotPck.header.isEmbedded}`
           ]
         }
@@ -81,6 +85,34 @@ export class EngineDetector {
             detectedFiles,
             encrypted: pakInfo.isEncrypted,
             notes: [`Encrypted index: ${pakInfo.isEncrypted}`, `Index offset: ${pakInfo.indexOffset}`]
+          }
+        };
+      }
+    }
+
+    // 2b. Electron app archive or Chromium data pack
+    if (ext === ".asar" && (await AsarParser.isAsar(filePath))) {
+      return {
+        engine: "electron",
+        confidence: 0.95,
+        containerType: "ASAR",
+        targetPath: filePath,
+        details: { framework: "Electron", markersFound: ["Electron asar archive"], detectedFiles }
+      };
+    }
+    if (ext === ".pak") {
+      const chromium = await ChromiumPakParser.readPak(filePath);
+      if (chromium) {
+        return {
+          engine: "electron",
+          confidence: 0.6,
+          containerType: `Chromium PAK v${chromium.version}`,
+          targetPath: filePath,
+          details: {
+            framework: "Electron",
+            markersFound: [`Chromium resources pack v${chromium.version} (${chromium.resources.length} resources)`],
+            detectedFiles,
+            notes: ["A bare Chromium .pak is used by Electron but also by CEF/Chromium based apps."]
           }
         };
       }
@@ -163,6 +195,8 @@ export class EngineDetector {
       // Check generic Windows PE software executable
       const peInfo = await PeResourceParser.parse(filePath);
       if (peInfo) {
+        const electron = await this.detectElectronApp(path.dirname(filePath), peInfo, filePath, detectedFiles);
+        if (electron) return electron;
         markersFound.push(`Windows PE Binary (${peInfo.arch})`);
         markersFound.push(`Framework: ${peInfo.framework}`);
         if (peInfo.resources.length > 0) {
@@ -196,6 +230,38 @@ export class EngineDetector {
       details: {
         markersFound,
         detectedFiles
+      }
+    };
+  }
+
+  /**
+   * Electron: an executable detected as Electron (PE framework info) that sits next to its app.asar or
+   * Chromium resources.pak. The PE framework stays available in details.framework.
+   */
+  private static async detectElectronApp(
+    dir: string,
+    peInfo: PeInfo,
+    targetPath: string,
+    detectedFiles: string[]
+  ): Promise<EngineDetectionResult | null> {
+    if (peInfo.framework !== "Electron") return null;
+    const payload = await findElectronPayload(dir);
+    if (!payload) return null;
+
+    const markersFound = [`Windows PE Binary (${peInfo.arch})`, "Framework: Electron"];
+    if (payload.asar) markersFound.push(`Electron app archive: ${path.relative(dir, payload.asar) || path.basename(payload.asar)}`);
+    if (payload.resourcesPak) markersFound.push(`Chromium resources pack: ${path.relative(dir, payload.resourcesPak) || path.basename(payload.resourcesPak)}`);
+    return {
+      engine: "electron",
+      confidence: payload.asar ? 0.95 : 0.85,
+      arch: peInfo.arch,
+      containerType: payload.asar ? "ASAR" : "Chromium PAK",
+      targetPath,
+      details: {
+        framework: "Electron",
+        markersFound,
+        detectedFiles: detectedFiles.slice(0, 50),
+        notes: ["Detected from the PE framework plus the app.asar / resources.pak payload next to it."]
       }
     };
   }
@@ -411,6 +477,20 @@ export class EngineDetector {
       }
     }
 
+    // Electron app folder: a PE executable next to app.asar / resources.pak (checked before descending into resources/)
+    if (unityScore === 0 && unrealScore === 0 && godotScore === 0) {
+      for (const exe of entries.filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".exe"))) {
+        const peInfo = await PeResourceParser.parse(path.join(dirPath, exe.name));
+        if (!peInfo) continue;
+        const electron = await this.detectElectronApp(dirPath, peInfo, dirPath, detectedFiles);
+        if (electron) {
+          electron.details.markersFound.splice(1, 0, `Executable: ${exe.name}`);
+          return electron;
+        }
+        break; // only the first PE executable decides, like the generic PE detection below
+      }
+    }
+
     // Recursive search in subdirectories if scores are low
     if (unityScore === 0 && unrealScore === 0 && godotScore === 0 && maxDepth > 1) {
       try {
@@ -479,6 +559,24 @@ export class EngineDetector {
             }
           };
         }
+      }
+    }
+
+    if (engine === "unknown") {
+      const payload = await findElectronPayload(dirPath);
+      if (payload?.asar && (await AsarParser.isAsar(payload.asar))) {
+        return {
+          engine: "electron",
+          confidence: 0.85,
+          arch: detectedArch,
+          containerType: "ASAR",
+          targetPath: dirPath,
+          details: {
+            framework: "Electron",
+            markersFound: [`Electron app archive: ${path.relative(dirPath, payload.asar)}`],
+            detectedFiles: detectedFiles.slice(0, 50)
+          }
+        };
       }
     }
 

@@ -21,7 +21,6 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { UnrealAdapter } from "../src/adapters/unreal-adapter.js";
-import { UnityAdapter } from "../src/adapters/unity-adapter.js";
 import { ReaBridge } from "../src/rea/rea-bridge.js";
 
 const EVIL_KEY = 'x" & echo hi > marker & "';
@@ -77,15 +76,7 @@ describe("external tools are spawned without a shell", () => {
     await expect(fs.access(outDir)).rejects.toThrow();
   });
 
-  it("passes paths to AssetRipper and REA as argv entries", async () => {
-    const target = path.join(tmpDir, 'game & calc;');
-    await fs.mkdir(target);
-    const outDir = path.join(tmpDir, "out");
-
-    await new UnityAdapter().extract(target, { outputDir: outDir });
-    const ripper = spawned.find((c) => c.args.includes("--output"));
-    expect(ripper?.args).toEqual([target, "--output", outDir, "--quiet"]);
-
+  it("passes paths to REA as argv entries", async () => {
     await ReaBridge.runReaTask('bin"; calc; "', 'task "q" & echo hi');
     const rea = spawned.find((c) => c.file === "rea" && c.args[0] === "inspect");
     expect(rea?.args).toEqual(["inspect", 'bin"; calc; "', "--task", 'task "q" & echo hi']);

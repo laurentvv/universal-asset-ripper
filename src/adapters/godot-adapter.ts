@@ -7,7 +7,8 @@ import type {
   AssetManifest,
   EngineType,
   ExtractOptions,
-  ExtractionResult
+  ExtractionResult,
+  InspectOptions
 } from "../types/index.js";
 
 export class GodotAdapter extends BaseEngineAdapter {
@@ -66,7 +67,7 @@ export class GodotAdapter extends BaseEngineAdapter {
     return sources;
   }
 
-  async inspect(targetPath: string): Promise<AssetManifest> {
+  async inspect(targetPath: string, options: InspectOptions = {}): Promise<AssetManifest> {
     const sources = await this.findPckSources(targetPath);
     if (sources.length === 0) {
       throw new Error(`No Godot PCK package found in target: ${targetPath}`);
@@ -76,8 +77,11 @@ export class GodotAdapter extends BaseEngineAdapter {
     let detectedEngineVersion: string | undefined;
 
     for (const source of sources) {
-      const manifest = await GodotPckParser.readManifest(source);
+      const manifest = await GodotPckParser.readManifest(source, { aesKey: options.aesKey });
       if (manifest) {
+        if (manifest.directoryError) {
+          throw new Error(`${path.basename(source)}: ${manifest.directoryError}`);
+        }
         if (!detectedEngineVersion) {
           detectedEngineVersion = `${manifest.header.engineMajor}.${manifest.header.engineMinor}.${manifest.header.enginePatch}`;
         }
@@ -107,8 +111,12 @@ export class GodotAdapter extends BaseEngineAdapter {
 
     // Parse and filter assets
     for (const source of sources) {
-      const manifest = await GodotPckParser.readManifest(source);
+      const manifest = await GodotPckParser.readManifest(source, { aesKey: options.aesKey });
       if (!manifest) continue;
+      if (manifest.directoryError) {
+        errors.push({ file: source, error: manifest.directoryError });
+        continue;
+      }
 
       // Match categories/filter against the same AssetItem that inspect() reports
       const { selected, dryRun } = this.planExtraction(
@@ -122,7 +130,10 @@ export class GodotAdapter extends BaseEngineAdapter {
         continue;
       }
 
-      const res = await GodotPckParser.extractFiles(source, options.outputDir, selected);
+      const res = await GodotPckParser.extractFiles(source, options.outputDir, selected, {
+        aesKey: options.aesKey,
+        convertFormats: options.convertFormats
+      });
       totalExtracted += res.extractedCount;
       errors.push(...res.errors);
     }

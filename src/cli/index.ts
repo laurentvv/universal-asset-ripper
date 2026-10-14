@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { EngineDetector } from "../core/detector/engine-detector.js";
 import { AdapterRegistry } from "../adapters/index.js";
@@ -105,13 +106,14 @@ program
 program
   .command("inspect <target>")
   .description("Inspect game assets, listing counts and total sizes by category")
+  .option("--aes-key <key>", "AES-256 key to list encrypted containers (Unreal .pak index, hex or base64)")
   .option("--json", "Print the full asset manifest as JSON to stdout")
-  .action(async (target: string, opts: { json?: boolean }) => {
+  .action(async (target: string, opts: { json?: boolean; aesKey?: string }) => {
     const spinner = startSpinner(`Inspecting package: ${chalk.cyan(target)}...`, opts.json);
     try {
       const resolved = path.resolve(target);
       const { adapter, engine } = await AdapterRegistry.resolveAdapter(resolved);
-      const manifest = await adapter.inspect(resolved);
+      const manifest = await adapter.inspect(resolved, { aesKey: opts.aesKey });
       if (opts.json) {
         printJson(manifest);
         return;
@@ -156,10 +158,11 @@ program
   .requiredOption("-o, --output <dir>", "Output directory for extracted assets")
   .option("--categories <cats>", `Comma-separated categories to extract (${ASSET_CATEGORIES.join(",")})`)
   .option("--filter <pattern>", "Filter files containing this substring")
-  .option("--aes-key <hex>", "AES-256 decryption key (Unreal Engine)")
+  .option("--aes-key <key>", "AES-256 decryption key: Unreal .pak (hex or base64), Godot encrypted PCK (32-byte hex script key)")
+  .option("--convert", "Convert formats while extracting (Godot .ctex/.stex wrapping a plain PNG/WebP are written as images)")
   .option("--dry-run", "Simulate extraction without writing files to disk")
   .option("--json", "Print the extraction result as JSON to stdout")
-  .action(async (target: string, opts: { output: string; categories?: string; filter?: string; aesKey?: string; dryRun?: boolean; json?: boolean }) => {
+  .action(async (target: string, opts: { output: string; categories?: string; filter?: string; aesKey?: string; convert?: boolean; dryRun?: boolean; json?: boolean }) => {
     const spinner = startSpinner(`Extracting assets from ${chalk.cyan(target)}...`, opts.json);
     try {
       const resolved = path.resolve(target);
@@ -188,6 +191,7 @@ program
         categories,
         filter: opts.filter,
         aesKey: opts.aesKey,
+        convertFormats: opts.convert,
         dryRun: opts.dryRun
       });
 
@@ -225,14 +229,23 @@ program
 program
   .command("rea-inspect <binary>")
   .description("Run deep binary reverse engineering scan (AES keys, IL2CPP metadata, and REA evidence bundle)")
+  .option("--pak <file>", "Unreal .pak used to verify every candidate key (verified keys are listed first)")
+  .option("--bundle <file>", "Write the REA evidence bundle (JSON) to this file")
   .option("--json", "Print the scan result and evidence bundle as JSON to stdout")
-  .action(async (binary: string, opts: { json?: boolean }) => {
+  .action(async (binary: string, opts: { json?: boolean; pak?: string; bundle?: string }) => {
     const spinner = startSpinner(`Running REA deep binary scan on: ${chalk.cyan(binary)}...`, opts.json);
     try {
       const resolved = path.resolve(binary);
-      const { scan, bundle } = await ReaBridge.inspectBinary(resolved);
+      const pakPath = opts.pak ? path.resolve(opts.pak) : undefined;
+      const { scan, bundle } = await ReaBridge.inspectBinary(resolved, { pakPath });
+      let bundlePath: string | undefined;
+      if (opts.bundle) {
+        bundlePath = path.resolve(opts.bundle);
+        await fs.mkdir(path.dirname(bundlePath), { recursive: true });
+        await fs.writeFile(bundlePath, JSON.stringify(bundle, null, 2), "utf-8");
+      }
       if (opts.json) {
-        printJson({ scan, bundle });
+        printJson({ scan, bundle, ...(bundlePath ? { bundleFile: bundlePath } : {}) });
         return;
       }
       spinner.succeed(`Binary inspection complete.`);
@@ -243,15 +256,44 @@ program
       console.log(chalk.bold("────────────────────────────────────────"));
       console.log(`  Binary:         ${chalk.white(path.basename(resolved))}`);
       console.log(`  Architecture:   ${chalk.white(scan.arch)}`);
+      console.log(`  Scanned:        ${chalk.white((scan.scannedBytes / 1024 / 1024).toFixed(2))} MB (whole file)`);
+      if (scan.verifiedAgainst) {
+        console.log(`  Verified with:  ${chalk.white(path.basename(scan.verifiedAgainst))}`);
+      }
 
       if (scan.candidateAesKeys.length > 0) {
         console.log();
-        console.log(chalk.bold.yellow("  Candidate AES-256 Keys Discovered:"));
+        console.log(
+          chalk.bold.yellow(
+            `  Candidate AES-256 Keys Discovered: ${scan.candidateTotal} candidates, showing ${scan.candidatesShown}`
+          )
+        );
         for (const key of scan.candidateAesKeys) {
-          console.log(`   ${chalk.green("🔑")} ${chalk.bold(key.keyHex)} (Offset: 0x${key.offset.toString(16)}, Entropy: ${key.entropy.toFixed(2)}, Conf: ${key.confidence})`);
+          const tag =
+            key.verified === true
+              ? chalk.bgGreen.black(" VERIFIED ")
+              : key.verified === false
+                ? chalk.red("rejected")
+                : key.verified === null
+                  ? chalk.dim("unverifiable")
+                  : "";
+          const extra = key.distanceFromSBox !== undefined ? `, ${key.distanceFromSBox}B from S-box` : "";
+          console.log(
+            `   ${chalk.green("🔑")} ${chalk.bold(key.keyHex)} ${tag} (Offset: 0x${key.offset.toString(16)}, Entropy: ${key.entropy.toFixed(2)}, Conf: ${key.confidence}, ${key.pattern}${extra})`
+          );
         }
       } else {
         console.log(`  AES Keys:       ${chalk.dim("No plaintext 256-bit keys detected")}`);
+      }
+
+      const dropped = Object.values(scan.filteredOut).reduce((a, b) => a + b, 0);
+      if (dropped > 0) {
+        console.log();
+        console.log(
+          chalk.dim(
+            `  Filtered out ${dropped} hex strings (longer hex runs ${scan.filteredOut.longerHexRun}, counting tables ${scan.filteredOut.sequential}, low entropy ${scan.filteredOut.lowEntropy}, repeated blocks ${scan.filteredOut.repeatedBlock}, trivial ${scan.filteredOut.trivial})`
+          )
+        );
       }
 
       if (scan.il2cppMetadata) {
@@ -274,6 +316,11 @@ program
         for (const rec of scan.recommendations) {
           console.log(`   ${chalk.yellow("⚡")} ${rec}`);
         }
+      }
+
+      if (bundlePath) {
+        console.log();
+        console.log(`  Evidence bundle written to ${chalk.cyan(bundlePath)}`);
       }
 
       console.log(chalk.bold("────────────────────────────────────────"));

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { BaseEngineAdapter } from "./engine-adapter.js";
 import { UnityBundleParser } from "../parsers/unity/bundle-parser.js";
 import { categorizeExtension, listFilesRecursively } from "../utils/file-utils.js";
-import { runTool } from "../utils/exec.js";
+import { findAssetRipper, runAssetRipperHeadless } from "../utils/assetripper.js";
 import type {
   AssetItem,
   AssetManifest,
@@ -92,22 +92,6 @@ export class UnityAdapter extends BaseEngineAdapter {
     return this.createManifest(targetPath, assets, detectedVersion);
   }
 
-  /**
-   * Check if AssetRipper CLI is available
-   */
-  private async isAssetRipperAvailable(): Promise<string | null> {
-    const candidates = ["AssetRipper", "AssetRipper.Cli", "AssetRipper.GUI"];
-    for (const cmd of candidates) {
-      try {
-        await runTool(cmd, ["--version"]);
-        return cmd;
-      } catch {
-        // Continue
-      }
-    }
-    return null;
-  }
-
   async extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult> {
     const startTime = Date.now();
     const errors: Array<{ file: string; error: string }> = [];
@@ -143,19 +127,22 @@ export class UnityAdapter extends BaseEngineAdapter {
       return fail();
     }
 
-    await fs.mkdir(options.outputDir, { recursive: true });
-    const assetRipperCmd = await this.isAssetRipperAvailable();
+    const assetRipper = await findAssetRipper();
 
-    if (assetRipperCmd) {
+    if (assetRipper) {
       try {
-        await runTool(assetRipperCmd, [targetPath, "--output", options.outputDir, "--quiet"]);
-        const extracted = await listFilesRecursively(options.outputDir);
+        await fs.mkdir(options.outputDir, { recursive: true });
+        await runAssetRipperHeadless({ executable: assetRipper, targetPath, outputDir: options.outputDir });
+        const extracted = await listFilesRecursively(options.outputDir, 64);
         return {
-          success: true,
+          success: extracted.length > 0,
           extractedCount: extracted.length,
           outputDir: options.outputDir,
           durationMs: Date.now() - startTime,
-          errors: []
+          errors:
+            extracted.length > 0
+              ? []
+              : [{ file: targetPath, error: "AssetRipper finished but wrote no files to the output directory." }]
         };
       } catch (err: unknown) {
         errors.push({
@@ -166,7 +153,8 @@ export class UnityAdapter extends BaseEngineAdapter {
     } else {
       errors.push({
         file: targetPath,
-        error: "AssetRipper CLI is not installed in PATH. Please install it via 'dotnet tool install -g AssetRipper.Cli' or download the release from https://github.com/AssetRipper/AssetRipper."
+        error:
+          "AssetRipper was not found. Download AssetRipper.GUI.Free from https://github.com/AssetRipper/AssetRipper/releases, then set ASSETRIPPER_PATH to the executable (or its folder) or add it to PATH. It is driven through its headless web mode (there is no AssetRipper.Cli)."
       });
     }
 

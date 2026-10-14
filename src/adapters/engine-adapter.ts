@@ -7,14 +7,15 @@ import type {
   EngineType,
   ExtractOptions,
   ExtractionResult,
-  IEngineAdapter
+  IEngineAdapter,
+  InspectOptions
 } from "../types/index.js";
 
 export abstract class BaseEngineAdapter implements IEngineAdapter {
   abstract readonly engine: EngineType;
 
   abstract canHandle(targetPath: string): Promise<boolean>;
-  abstract inspect(targetPath: string): Promise<AssetManifest>;
+  abstract inspect(targetPath: string, options?: InspectOptions): Promise<AssetManifest>;
   abstract extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult>;
 
   /**

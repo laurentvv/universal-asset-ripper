@@ -7,18 +7,7 @@ import { UnityBundleParser } from "../src/parsers/unity/bundle-parser.js";
 import { UnrealAdapter } from "../src/adapters/unreal-adapter.js";
 import { UnityAdapter } from "../src/adapters/unity-adapter.js";
 import { PeResourceParser } from "../src/parsers/pe/pe-resource-parser.js";
-
-/** Smallest PE32+ image the parser accepts (no sections, no resources) */
-function minimalPe(): Buffer {
-  const buf = Buffer.alloc(1024);
-  buf.writeUInt16LE(0x5a4d, 0);
-  buf.writeInt32LE(128, 0x3c);
-  buf.writeUInt32LE(0x00004550, 128);
-  buf.writeUInt16LE(0x8664, 128 + 4);
-  buf.writeUInt16LE(240, 128 + 20);
-  buf.writeUInt16LE(0x020b, 128 + 24);
-  return buf;
-}
+import { minimalPe } from "./helpers/minimal-pe.js";
 
 describe("Detector false-positive guards", () => {
   let tmpDir: string;
@@ -52,14 +41,14 @@ describe("Detector false-positive guards", () => {
     expect(await new UnityAdapter().canHandle(dir)).toBe(false);
   });
 
-  it("ignores a Chromium resources.pak next to an executable (Electron stays a PE app)", async () => {
+  it("treats an Electron executable beside a (here unreadable) resources.pak as the electron engine, never Unreal", async () => {
     const dir = path.join(tmpDir, "electronapp");
     await fs.mkdir(dir);
     await fs.writeFile(path.join(dir, "app.exe"), minimalPe());
     await fs.writeFile(path.join(dir, "resources.pak"), Buffer.alloc(4096, 3));
 
     const result = await EngineDetector.detect(dir);
-    expect(result.engine).toBe("pe-software");
+    expect(result.engine).toBe("electron");
     expect(result.details.framework).toBe("Electron");
     expect(result.details.markersFound.some((m) => m.includes("Unreal"))).toBe(false);
   });

@@ -1,6 +1,15 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { categorizeExtension, copyRangeToFile, resolveSafeOutputPath } from "../../utils/file-utils.js";
+import {
+  GODOT_ENCRYPTED_HEADER_BYTES,
+  GodotCryptoError,
+  decryptGodotBlock,
+  paddedLength,
+  parseGodotKey,
+  readGodotEncryptedHeader
+} from "./godot-crypto.js";
+import { extractCtexImage } from "./ctex.js";
 import type { AssetItem } from "../../types/index.js";
 
 export const GDPC_MAGIC = 0x43504447; // "GDPC" in Little Endian
@@ -9,6 +18,17 @@ const PACK_DIR_ENCRYPTED = 1;
 const PACK_REL_FILEBASE = 2;
 const PCK_ENTRY_ENCRYPTED = 1;
 const MAX_INDEX_READ = 256 * 1024 * 1024;
+const MAX_ENCRYPTED_BLOCK = 1024 * 1024 * 1024;
+
+export interface PckReadOptions {
+  /** Script encryption key (64 hex chars) for an encrypted directory / encrypted files */
+  aesKey?: string;
+}
+
+export interface PckExtractOptions extends PckReadOptions {
+  /** Write .ctex/.stex textures that wrap a plain PNG/WebP as that image instead of the raw container */
+  convertFormats?: boolean;
+}
 
 export interface PckHeader {
   magic: number;
@@ -158,7 +178,10 @@ export class GodotPckParser {
   /**
    * Read and parse the PCK header & index (formats v0-v4)
    */
-  static async readManifest(filePath: string): Promise<{ header: PckHeader; files: PckFileEntry[] } | null> {
+  static async readManifest(
+    filePath: string,
+    options: PckReadOptions = {}
+  ): Promise<{ header: PckHeader; files: PckFileEntry[]; directoryError?: string } | null> {
     const loc = await this.findPckOffset(filePath);
     if (!loc) return null;
 
@@ -202,7 +225,30 @@ export class GodotPckParser {
       const entryBase = loc.offset + (flags & PACK_REL_FILEBASE ? filesBaseOffset : 0n);
 
       let files: PckFileEntry[] = [];
-      if (!(flags & PACK_DIR_ENCRYPTED) && indexStart < fileSize) {
+      let directoryError: string | undefined;
+      if (flags & PACK_DIR_ENCRYPTED) {
+        // The directory is one FileAccessEncrypted block (md5 | length | iv | AES-256-CFB data)
+        if (!options.aesKey) {
+          directoryError =
+            "The PCK directory is encrypted: the script encryption key is required (--aes-key, 64 hex characters).";
+        } else {
+          try {
+            const key = parseGodotKey(options.aesKey);
+            const head = Buffer.alloc(GODOT_ENCRYPTED_HEADER_BYTES);
+            await fileHandle.read(head, 0, head.length, indexStart);
+            const len = readGodotEncryptedHeader(head).length;
+            const blockLen = GODOT_ENCRYPTED_HEADER_BYTES + paddedLength(len);
+            if (len > MAX_INDEX_READ || indexStart + blockLen > fileSize) {
+              throw new GodotCryptoError("bad-key", "Wrong AES key or corrupt encrypted directory (implausible length).");
+            }
+            const block = Buffer.alloc(blockLen);
+            await fileHandle.read(block, 0, blockLen, indexStart);
+            files = this.parseIndex(decryptGodotBlock(block, key), formatVersion, entryBase).files;
+          } catch (err: unknown) {
+            directoryError = err instanceof Error ? err.message : String(err);
+          }
+        }
+      } else if (indexStart < fileSize) {
         // Read the whole index in one buffer, growing it only if the directory is bigger
         const avail = fileSize - indexStart;
         let readLen = Math.min(avail, 4 * 1024 * 1024);
@@ -230,7 +276,8 @@ export class GodotPckParser {
           isEmbedded: loc.isEmbedded,
           pckStartOffset: loc.offset
         },
-        files
+        files,
+        ...(directoryError ? { directoryError } : {})
       };
     } catch {
       return null;
@@ -266,20 +313,54 @@ export class GodotPckParser {
   }
 
   /**
+   * Read one entry's bytes, decrypting it when flagged PACK_FILE_ENCRYPTED (needs the script key)
+   */
+  private static async readEntryData(
+    fileHandle: fs.FileHandle,
+    entry: PckFileEntry,
+    fileSize: number,
+    key: Buffer | undefined
+  ): Promise<Buffer> {
+    if (entry.flags & PCK_ENTRY_ENCRYPTED) {
+      if (!key) throw new Error("Encrypted PCK entry: the script encryption key is required (--aes-key)");
+      const start = Number(entry.offset);
+      const head = Buffer.alloc(GODOT_ENCRYPTED_HEADER_BYTES);
+      await fileHandle.read(head, 0, head.length, start);
+      const len = readGodotEncryptedHeader(head).length;
+      const blockLen = GODOT_ENCRYPTED_HEADER_BYTES + paddedLength(len);
+      if (blockLen > MAX_ENCRYPTED_BLOCK || start + blockLen > fileSize) {
+        throw new Error("Wrong AES key or corrupt encrypted entry (implausible length)");
+      }
+      const block = Buffer.alloc(blockLen);
+      await fileHandle.read(block, 0, blockLen, start);
+      return decryptGodotBlock(block, key);
+    }
+    if (entry.offset + entry.size > BigInt(fileSize)) {
+      throw new Error("Entry data lies beyond the end of the file");
+    }
+    const data = Buffer.alloc(Number(entry.size));
+    await fileHandle.read(data, 0, data.length, Number(entry.offset));
+    return data;
+  }
+
+  /**
    * Extract files from PCK to target directory. Pass `filesToExtract` (entries from
-   * readManifest, offsets are absolute) to avoid parsing the index again.
+   * readManifest, offsets are absolute) to avoid parsing the index again. Encrypted entries need
+   * options.aesKey; options.convertFormats lifts PNG/WebP payloads out of .ctex/.stex textures.
    */
   static async extractFiles(
     pckFilePath: string,
     outputDir: string,
-    filesToExtract?: PckFileEntry[]
+    filesToExtract?: PckFileEntry[],
+    options: PckExtractOptions = {}
   ): Promise<{ extractedCount: number; errors: Array<{ file: string; error: string }> }> {
     let targetList = filesToExtract;
     if (!targetList) {
-      const manifest = await this.readManifest(pckFilePath);
+      const manifest = await this.readManifest(pckFilePath, options);
       if (!manifest) {
         throw new Error(`Failed to parse Godot PCK header in: ${pckFilePath}`);
       }
+      if (manifest.directoryError) throw new Error(manifest.directoryError);
       targetList = manifest.files;
     }
 
@@ -287,24 +368,42 @@ export class GodotPckParser {
     const errors: Array<{ file: string; error: string }> = [];
     let extractedCount = 0;
 
+    let key: Buffer | undefined;
+    if (options.aesKey) {
+      try {
+        key = parseGodotKey(options.aesKey);
+      } catch (err: unknown) {
+        return { extractedCount: 0, errors: [{ file: pckFilePath, error: err instanceof Error ? err.message : String(err) }] };
+      }
+    }
+
     try {
       fileHandle = await fs.open(pckFilePath, "r");
       const fileSize = (await fileHandle.stat()).size;
 
       for (const entry of targetList) {
         try {
-          if (entry.flags & PCK_ENTRY_ENCRYPTED) {
-            throw new Error("Encrypted PCK entries are not supported");
-          }
           const outFilePath = resolveSafeOutputPath(outputDir, entry.path);
           if (!outFilePath) {
             throw new Error("Unsafe entry path rejected (escapes the output directory)");
           }
-          if (entry.offset + entry.size > BigInt(fileSize)) {
-            throw new Error("Entry data lies beyond the end of the file");
-          }
           await fs.mkdir(path.dirname(outFilePath), { recursive: true });
-          await copyRangeToFile(fileHandle, Number(entry.offset), Number(entry.size), outFilePath);
+
+          const isTexture = /\.(ctex|stex)$/i.test(entry.path);
+          if (entry.flags & PCK_ENTRY_ENCRYPTED || (options.convertFormats && isTexture)) {
+            const data = await this.readEntryData(fileHandle, entry, fileSize, key);
+            const image = options.convertFormats && isTexture ? extractCtexImage(data) : null;
+            if (image) {
+              await fs.writeFile(outFilePath.replace(/\.(ctex|stex)$/i, `.${image.ext}`), image.data);
+            } else {
+              await fs.writeFile(outFilePath, data);
+            }
+          } else {
+            if (entry.offset + entry.size > BigInt(fileSize)) {
+              throw new Error("Entry data lies beyond the end of the file");
+            }
+            await copyRangeToFile(fileHandle, Number(entry.offset), Number(entry.size), outFilePath);
+          }
           extractedCount++;
         } catch (err: unknown) {
           errors.push({

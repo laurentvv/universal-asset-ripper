@@ -80,8 +80,9 @@ export async function callTool(name: string, args: ToolArgs) {
     if (name === "ripper_inspect") {
       const targetPath = requireString(args, "targetPath");
       const limit = optionalLimit(args);
+      const aesKey = optionalString(args, "aesKey");
       const { adapter } = await AdapterRegistry.resolveAdapter(targetPath);
-      const manifest = await adapter.inspect(targetPath);
+      const manifest = await adapter.inspect(targetPath, { aesKey });
       // Large games have tens of thousands of assets: return totals plus a bounded asset list
       return jsonResult({
         ...manifest,
@@ -98,6 +99,7 @@ export async function callTool(name: string, args: ToolArgs) {
       const filter = optionalString(args, "filter");
       const aesKey = optionalString(args, "aesKey");
       const dryRun = optionalBoolean(args, "dryRun");
+      const convertFormats = optionalBoolean(args, "convertFormats");
 
       const { adapter } = await AdapterRegistry.resolveAdapter(targetPath);
       const result = await adapter.extract(targetPath, {
@@ -105,6 +107,7 @@ export async function callTool(name: string, args: ToolArgs) {
         categories,
         filter,
         aesKey,
+        convertFormats,
         dryRun
       });
       return jsonResult(result);
@@ -112,7 +115,8 @@ export async function callTool(name: string, args: ToolArgs) {
 
     if (name === "ripper_scan_binary") {
       const binaryPath = requireString(args, "binaryPath");
-      return jsonResult(await ReaBridge.inspectBinary(binaryPath));
+      const pakPath = optionalString(args, "pakPath");
+      return jsonResult(await ReaBridge.inspectBinary(binaryPath, { pakPath }));
     }
 
     throw new Error(`Unknown tool: ${name}`);
@@ -174,6 +178,10 @@ export function createMcpServer(): Server {
                 type: "integer",
                 minimum: 0,
                 description: "Maximum number of assets to return in the list (default 200). Totals always cover every asset."
+              },
+              aesKey: {
+                type: "string",
+                description: "Optional AES-256 key to list encrypted containers (Unreal .pak index, Godot encrypted PCK)"
               }
             },
             required: ["targetPath"]
@@ -207,7 +215,11 @@ export function createMcpServer(): Server {
               },
               aesKey: {
                 type: "string",
-                description: "AES-256 decryption key for encrypted Unreal .pak containers"
+                description: "AES-256 decryption key for encrypted Unreal .pak containers (hex/base64) or Godot encrypted PCK (hex)"
+              },
+              convertFormats: {
+                type: "boolean",
+                description: "Convert formats while extracting (Godot .ctex/.stex wrapping a plain PNG/WebP are written as images)"
               },
               dryRun: {
                 type: "boolean",
@@ -226,6 +238,10 @@ export function createMcpServer(): Server {
               binaryPath: {
                 type: "string",
                 description: "Path to the game executable or binary (.exe, .dll, .so)"
+              },
+              pakPath: {
+                type: "string",
+                description: "Optional Unreal .pak used to verify each candidate key (verified keys are listed first)"
               }
             },
             required: ["binaryPath"]

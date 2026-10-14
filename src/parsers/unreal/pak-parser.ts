@@ -13,6 +13,8 @@ export interface UnrealPakInfo {
   indexSize: bigint;
   isEncrypted: boolean;
   compressionMethods?: string[];
+  /** Raw compression-name slots of the footer (v8+), empty slots kept: slot i is method id i + 1 */
+  compressionSlots?: string[];
   footerOffset: number;
 }
 
@@ -54,6 +56,7 @@ export class UnrealPakParser {
 
         // Everything after hash (and the v9 frozen byte) is the compression method table
         const compressionMethods: string[] = [];
+        const compressionSlots: string[] = [];
         if (version >= 8) {
           const fixedLen = 44 + (version === 9 ? 1 : 0);
           const nameCount = Math.min(5, Math.floor((footerReadSize - offset - fixedLen) / COMPRESSION_NAME_SIZE));
@@ -62,6 +65,7 @@ export class UnrealPakParser {
             const raw = footerBuf.subarray(start, start + COMPRESSION_NAME_SIZE);
             const nul = raw.indexOf(0);
             const name = (nul >= 0 ? raw.subarray(0, nul) : raw).toString("ascii");
+            compressionSlots.push(name);
             if (name.length > 0) compressionMethods.push(name);
           }
         }
@@ -73,6 +77,7 @@ export class UnrealPakParser {
           indexSize,
           isEncrypted,
           compressionMethods,
+          compressionSlots,
           footerOffset: Number(stat.size) - (footerReadSize - offset)
         };
       }

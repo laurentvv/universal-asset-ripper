@@ -42,6 +42,8 @@ const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   ".ac3": "audio",
   ".aac": "audio",
   ".sample": "audio", // Godot audio sample
+  ".wem": "audio", // Wwise encoded media
+  ".bnk": "audio", // Wwise sound bank
 
   // Scenes & Levels
   ".unity": "scene",
@@ -75,6 +77,7 @@ const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   ".mp4": "video",
   ".webm": "video",
   ".ogv": "video",
+  ".usm": "video", // CRI Sofdec movie
   ".avi": "video",
 
   // Animations
@@ -89,7 +92,10 @@ const EXTENSION_CATEGORIES: Record<string, AssetCategory> = {
   ".ini": "config",
   ".cfg": "config",
   ".tres": "config", // Godot resource
-  ".res": "config"
+  ".res": "config",
+  ".locres": "config", // Unreal localization resource
+  ".uplugin": "config",
+  ".uproject": "config"
 };
 
 export function categorizeExtension(filePath: string): AssetCategory {
