@@ -1,18 +1,22 @@
 mod chrome;
 mod dialogs;
+mod ribbon;
 
 use self::chrome::{cmd_for, hint_text, pruned, shortcut_text, to_egui_shortcut, Cmd};
 use super::assets::{self, Chevrons};
+use super::paint::{self, Icon};
 use super::views::{self, ListEvent};
 use crate::analysis::duplicates::{self, DupGroup};
 use crate::analysis::filter::{self, Filter};
 use crate::analysis::types::{self, TypeStat};
 use crate::dfm::{self, Item};
 use crate::export;
+use crate::fmt;
 use crate::i18n::{self, tr, tr_ctx};
+use crate::scan::model::DirectFiles;
 use crate::scan::{self, format_bytes, format_time, model::normalize_root, NodeId, ScanHandle, ScanMsg, Tree, NONE};
-use crate::settings::{self, SizeMode, Settings, SortKey as SortCol, Theme, ViewKind, WindowGeom};
-use eframe::egui::{self, Color32, RichText, Sense};
+use crate::settings::{self, SizeMode, Settings, SortKey as SortCol, Theme, Units, ViewKind, WindowGeom};
+use eframe::egui::{self, Color32, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -20,7 +24,106 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// A line of the tree: a node, or the aggregated "[N Files]" pseudo-row of a folder.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum RowKind {
+    Node(NodeId),
+    Files(NodeId),
+}
+
+#[derive(Clone, Copy)]
+struct Row {
+    kind: RowKind,
+    depth: u16,
+    /// One of the three biggest siblings (drawn bold, like the original).
+    bold: bool,
+    /// Aggregate of a `Files` row.
+    files: DirectFiles,
+}
+
+/// Sorted children of one folder plus its files aggregate.
+#[derive(Default)]
+struct Sib {
+    order: Vec<RowKind>,
+    top: Vec<RowKind>,
+    files: DirectFiles,
+}
+
+struct Key {
+    name: String,
+    size: u64,
+    alloc: u64,
+    files: u64,
+    dirs: u64,
+    modified: i64,
+}
+
+/// "[30 Files]" from the catalogue template (`[%d Files]`).
+pub fn files_label_with(template: &str, count: u64) -> String {
+    template.replace("%d", &fmt::group_int(count))
+}
+
+fn files_label(count: u64) -> String {
+    files_label_with(&tr("[%d Files]"), count)
+}
+
+fn row_key(tree: &Tree, k: RowKind, files: &DirectFiles) -> Key {
+    match k {
+        RowKind::Node(id) => {
+            let n = tree.get(id);
+            Key { name: n.name.to_lowercase(), size: n.size, alloc: n.alloc, files: n.files, dirs: n.dirs, modified: n.modified }
+        }
+        RowKind::Files(_) => Key { name: files_label(files.count).to_lowercase(), size: files.size, alloc: files.alloc, files: files.count, dirs: 0, modified: files.modified },
+    }
+}
+
+fn key_cmp(sort: SortCol, desc: bool, a: &Key, b: &Key) -> std::cmp::Ordering {
+    let o = match sort {
+        SortCol::Name => a.name.cmp(&b.name),
+        SortCol::Size | SortCol::Percent => a.size.cmp(&b.size),
+        SortCol::Alloc => a.alloc.cmp(&b.alloc),
+        SortCol::Files => a.files.cmp(&b.files),
+        SortCol::Folders => a.dirs.cmp(&b.dirs),
+        SortCol::Modified => a.modified.cmp(&b.modified),
+    };
+    if desc { o.reverse() } else { o }
+}
+
+/// Children of `id` as tree lines: sub-folders, then one aggregated Files line (unless a filter is
+/// active, which lists matching files individually).
+fn build_sib(tree: &Tree, id: NodeId, filtering: bool, sort: SortCol, desc: bool) -> Sib {
+    let files = if filtering { DirectFiles::default() } else { tree.direct_files(id) };
+    let mut items: Vec<(RowKind, Key)> = Vec::new();
+    for &c in &tree.get(id).children {
+        if filtering || tree.get(c).is_dir {
+            let k = RowKind::Node(c);
+            items.push((k, row_key(tree, k, &files)));
+        }
+    }
+    if !filtering && files.count > 0 {
+        let k = RowKind::Files(id);
+        items.push((k, row_key(tree, k, &files)));
+    }
+    let mut by_size: Vec<usize> = (0..items.len()).collect();
+    by_size.sort_by_key(|&i| std::cmp::Reverse(items[i].1.size));
+    let top = by_size.iter().take(3).filter(|&&i| items[i].1.size > 0).map(|&i| items[i].0).collect();
+    items.sort_by(|a, b| key_cmp(sort, desc, &a.1, &b.1));
+    Sib { order: items.into_iter().map(|(k, _)| k).collect(), top, files }
+}
+
+/// "of" as in "101 GB (of 930 GB)"; the catalogue has no entry for it.
+fn of_word() -> String {
+    let t = tr("of");
+    if t == "of" && fmt::loc() == fmt::Loc::Fr { "sur".into() } else { t }
+}
+
+fn expandable(tree: &Tree, id: NodeId) -> bool {
+    let n = tree.get(id);
+    n.is_dir && (!n.children.is_empty() || (tree.live.is_some() && tree.direct_files(id).count > 0))
+}
+
 enum Action {
+    ToggleFiles(NodeId),
     Toggle(NodeId),
     Select(NodeId),
     OpenExplorer(NodeId),
@@ -68,8 +171,8 @@ pub struct App {
     notice: String,
     view_root: NodeId,
     types_cache: Option<Vec<TypeStat>>,
-    largest_cache: Option<Vec<NodeId>>,
-    oldest_cache: Option<Vec<NodeId>>,
+    largest_cache: Option<Vec<views::RankedRow>>,
+    oldest_cache: Option<Vec<views::RankedRow>>,
     dup_run: Option<DupRun>,
     dup_result: Option<Vec<DupGroup>>,
     dup_min: String,
@@ -87,8 +190,15 @@ pub struct App {
     expanded: HashSet<NodeId>,
     sort: SortCol,
     desc: bool,
-    sorted: HashMap<NodeId, Vec<NodeId>>,
-    rows: Vec<(NodeId, u16)>,
+    sorted: HashMap<NodeId, Sib>,
+    files_expanded: HashSet<NodeId>,
+    rows: Vec<Row>,
+    ribbon_tab: usize,
+    disk: Option<scan::DiskInfo>,
+    system_dark: bool,
+    sys_checked: Instant,
+    col_live: Vec<(SortCol, f32)>,
+    col_changed: Instant,
     rows_dirty: bool,
     selected: Option<NodeId>,
     props: Option<NodeId>,
@@ -103,7 +213,7 @@ pub struct App {
     about_icon: Option<egui::TextureHandle>,
     exclude_input: String,
     lang_applied: String,
-    theme_applied: Option<Theme>,
+    dark_applied: Option<bool>,
     persist_enabled: bool,
     win_geom: Option<WindowGeom>,
     win_changed: Instant,
@@ -207,11 +317,21 @@ fn save_png(img: &egui::ColorImage, path: &std::path::Path) -> Result<(), String
     buf.save_with_format(path, image::ImageFormat::Png).map_err(|e| e.to_string())
 }
 
-fn visuals_for(t: Theme) -> egui::Visuals {
-    match t {
-        Theme::Dark => egui::Visuals::dark(),
-        Theme::Light => egui::Visuals::light(),
+/// Dark theme close to the original: dark grey rows (#1F1F1F), #3C3C3C selection, blue accents.
+fn visuals_for(dark: bool) -> egui::Visuals {
+    if !dark {
+        return egui::Visuals::light();
     }
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = Color32::from_rgb(31, 31, 31);
+    v.window_fill = Color32::from_rgb(37, 37, 38);
+    v.extreme_bg_color = Color32::from_rgb(22, 22, 22);
+    v.faint_bg_color = Color32::from_rgb(36, 36, 36);
+    v.selection.bg_fill = Color32::from_rgb(60, 60, 60);
+    v.selection.stroke = Stroke::new(1.0, Color32::from_rgb(230, 230, 230));
+    v.hyperlink_color = Color32::from_rgb(85, 160, 255);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(52, 52, 56);
+    v
 }
 
 fn list_drives() -> Vec<String> {
@@ -234,10 +354,10 @@ pub fn run(opts: RunOptions) -> eframe::Result<()> {
         settings::default_path().as_deref().map(settings::load_from).unwrap_or_default()
     };
     let geom = st.window.and_then(|g| sanitize_geom(g, (spec.min_w, spec.min_h))).filter(|_| !shot_mode);
-    let (w, h) = match (shot_mode, geom) {
-        (true, _) => (1100.0, 700.0),
-        (false, Some(g)) => (g.w, g.h),
-        (false, None) => (spec.client_w, spec.client_h),
+    // Default window: 1200x800, centred; a saved geometry wins.
+    let (w, h) = match geom {
+        Some(g) => (g.w, g.h),
+        None => (1200.0, 800.0),
     };
     let mut vp = egui::ViewportBuilder::default()
         .with_inner_size([w, h])
@@ -249,7 +369,7 @@ pub fn run(opts: RunOptions) -> eframe::Result<()> {
     if let Some(icon) = assets::window_icon() {
         vp = vp.with_icon(std::sync::Arc::new(icon));
     }
-    let options = eframe::NativeOptions { viewport: vp, ..Default::default() };
+    let options = eframe::NativeOptions { viewport: vp, centered: geom.is_none(), ..Default::default() };
     eframe::run_native(
         "treesize-clone",
         options,
@@ -299,8 +419,11 @@ impl App {
         }
         let eff = i18n::set_language(&i18n::resolve_language(&st.language));
         assets::install_language_fonts(ctx, &eff);
+        fmt::set_locale(&eff);
         scan::set_units(st.units);
-        ctx.set_visuals(visuals_for(st.theme));
+        let system_dark = settings::system_dark();
+        let dark = st.theme.is_dark(system_dark);
+        ctx.set_visuals(visuals_for(dark));
         let view = opts.view.unwrap_or(st.view);
         Self {
             path_text: if st.last_path.is_empty() { first } else { st.last_path.clone() },
@@ -311,8 +434,15 @@ impl App {
             excludes: st.excludes.iter().map(PathBuf::from).collect(),
             saved_settings: st.clone(),
             lang_applied: st.language.clone(),
-            theme_applied: Some(st.theme),
-            chevrons: Chevrons::load(ctx, st.theme == Theme::Dark),
+            dark_applied: Some(dark),
+            chevrons: Chevrons::load(ctx, dark),
+            system_dark,
+            sys_checked: Instant::now(),
+            col_live: Vec::new(),
+            col_changed: Instant::now(),
+            files_expanded: HashSet::new(),
+            ribbon_tab: 1,
+            disk: None,
             settings: st,
             settings_path,
             filter: Filter::default(),
@@ -376,6 +506,22 @@ impl App {
         self.scan_started = Instant::now();
         self.scan_total = scan::drive_used_bytes(&root);
         self.scan_root = root.clone();
+        self.disk = scan::disk_info(&root);
+        // Show the root row (with live counters) from the very first frame.
+        self.expanded.clear();
+        self.expanded.insert(Tree::ROOT);
+        self.files_expanded.clear();
+        self.selected = None;
+        self.props = None;
+        self.view_root = Tree::ROOT;
+        self.loaded = Some(Loaded {
+            tree: Tree::placeholder(&root.to_string_lossy()),
+            root: root.clone(),
+            elapsed: Duration::ZERO,
+            error_list: Vec::new(),
+            cancelled: false,
+        });
+        self.invalidate();
         self.handle = Some(scan::spawn_scan_opts(root, self.excludes.clone(), self.fast_ntfs));
     }
 
@@ -455,6 +601,19 @@ impl App {
         if let Some(t) = latest {
             self.apply_partial(t);
         }
+        self.patch_live_counters();
+    }
+
+    /// While scanning, the root row shows the scanner's own counters when they are ahead of the
+    /// last snapshot (the real TreeSize shows files and folders counting up from the first second).
+    fn patch_live_counters(&mut self) {
+        let (Some(h), Some(l)) = (&self.handle, &mut self.loaded) else { return };
+        if let Some(r) = l.tree.nodes.first_mut() {
+            r.files = r.files.max(h.progress.files.load(Ordering::Relaxed));
+            r.dirs = r.dirs.max(h.progress.dirs.load(Ordering::Relaxed).saturating_sub(1));
+            r.size = r.size.max(h.progress.bytes.load(Ordering::Relaxed));
+            l.elapsed = self.scan_started.elapsed();
+        }
     }
 
     /// Drop every cache derived from the tree (after a scan or a structural change).
@@ -467,19 +626,6 @@ impl App {
         self.oldest_cache = None;
     }
 
-    fn sort_key_cmp(&self, tree: &Tree, a: NodeId, b: NodeId) -> std::cmp::Ordering {
-        let (na, nb) = (tree.get(a), tree.get(b));
-        let o = match self.sort {
-            SortCol::Name => na.name.to_lowercase().cmp(&nb.name.to_lowercase()),
-            SortCol::Size | SortCol::Percent => na.size.cmp(&nb.size),
-            SortCol::Alloc => na.alloc.cmp(&nb.alloc),
-            SortCol::Files => na.files.cmp(&nb.files),
-            SortCol::Folders => na.dirs.cmp(&nb.dirs),
-            SortCol::Modified => na.modified.cmp(&nb.modified),
-        };
-        if self.desc { o.reverse() } else { o }
-    }
-
     fn rebuild_rows(&mut self) {
         self.rows.clear();
         let Some(loaded) = self.loaded.take() else { return };
@@ -490,19 +636,42 @@ impl App {
             self.filter_set = None;
         }
         let fset = self.filter_set.as_ref();
+        let filtering = fset.is_some();
+        let (sort, desc) = (self.sort, self.desc);
         if !tree.nodes.is_empty() {
-            let mut stack: Vec<(NodeId, u16)> = vec![(Tree::ROOT, 0)];
-            while let Some((id, depth)) = stack.pop() {
-                self.rows.push((id, depth));
-                if (fset.is_some() || self.expanded.contains(&id)) && !tree.get(id).children.is_empty() {
-                    if !self.sorted.contains_key(&id) {
-                        let mut kids = tree.get(id).children.clone();
-                        kids.sort_by(|&a, &b| self.sort_key_cmp(tree, a, b));
-                        self.sorted.insert(id, kids);
+            let mut stack = vec![Row { kind: RowKind::Node(Tree::ROOT), depth: 0, bold: false, files: DirectFiles::default() }];
+            while let Some(row) = stack.pop() {
+                self.rows.push(row);
+                match row.kind {
+                    RowKind::Node(id) => {
+                        if !(tree.get(id).is_dir && (filtering || self.expanded.contains(&id))) {
+                            continue;
+                        }
+                        let sib = self.sorted.entry(id).or_insert_with(|| build_sib(tree, id, filtering, sort, desc));
+                        for &c in sib.order.iter().rev() {
+                            let (keep, files) = match c {
+                                RowKind::Node(x) => (fset.is_none_or(|s| s.contains(&x)), DirectFiles::default()),
+                                RowKind::Files(_) => (true, sib.files),
+                            };
+                            if keep {
+                                stack.push(Row { kind: c, depth: row.depth + 1, bold: sib.top.contains(&c), files });
+                            }
+                        }
                     }
-                    for &c in self.sorted[&id].iter().rev() {
-                        if fset.is_none_or(|s| s.contains(&c)) {
-                            stack.push((c, depth + 1));
+                    RowKind::Files(dir) => {
+                        if tree.has_file_nodes() && self.files_expanded.contains(&dir) {
+                            let mut items: Vec<(NodeId, Key)> = tree
+                                .get(dir)
+                                .children
+                                .iter()
+                                .copied()
+                                .filter(|&c| !tree.get(c).is_dir)
+                                .map(|c| (c, row_key(tree, RowKind::Node(c), &DirectFiles::default())))
+                                .collect();
+                            items.sort_by(|a, b| key_cmp(sort, desc, &a.1, &b.1));
+                            for (c, _) in items.into_iter().rev() {
+                                stack.push(Row { kind: RowKind::Node(c), depth: row.depth + 1, bold: false, files: DirectFiles::default() });
+                            }
                         }
                     }
                 }
@@ -526,6 +695,12 @@ impl App {
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
         for a in actions {
             match a {
+                Action::ToggleFiles(id) => {
+                    if !self.files_expanded.remove(&id) {
+                        self.files_expanded.insert(id);
+                    }
+                    self.rows_dirty = true;
+                }
                 Action::Toggle(id) => {
                     if !self.expanded.remove(&id) {
                         self.expanded.insert(id);
@@ -594,6 +769,8 @@ impl App {
             Cmd::SetUnits(u) => self.settings.units == u,
             Cmd::ToggleDetails => self.settings.details,
             Cmd::Filter => self.show_filters,
+            Cmd::SetView(v) => self.view == v,
+            Cmd::ToggleFast => self.fast_ntfs,
             _ => false,
         }
     }
@@ -650,6 +827,8 @@ impl App {
                 }
             }
             Cmd::Filter => self.show_filters = !self.show_filters,
+            Cmd::SetView(v) => self.view = v,
+            Cmd::ToggleFast => self.fast_ntfs = !self.fast_ntfs,
             Cmd::Options => self.show_options = true,
             Cmd::About => self.show_about = true,
             Cmd::ExpandLevel(n) => self.expand_to(Some(n as u32)),
@@ -706,30 +885,6 @@ impl App {
         out
     }
 
-    /// Toolbar buttons in the order of the original `MainToolBar`.
-    fn toolbar(&mut self, ui: &mut egui::Ui) -> Option<Cmd> {
-        let mut out = None;
-        ui.horizontal_wrapped(|ui| {
-            for it in &self.toolbar_items {
-                if it.separator {
-                    ui.separator();
-                    continue;
-                }
-                let Some(cmd) = cmd_for(it) else { continue };
-                let label = Self::item_label(it);
-                let mut r = ui.add_enabled(self.cmd_enabled(cmd), egui::Button::new(label).selected(self.cmd_checked(cmd)));
-                let hint = Self::item_hint(it);
-                if !hint.is_empty() {
-                    r = r.on_hover_text(hint);
-                }
-                if r.clicked() {
-                    out = Some(cmd);
-                }
-            }
-        });
-        out
-    }
-
     fn path_row(&mut self, ui: &mut egui::Ui) {
         let scanning = self.handle.is_some();
         ui.horizontal(|ui| {
@@ -763,28 +918,46 @@ impl App {
             });
             ui.separator();
         }
-        let w = &dfm::main_spec().status_panels;
-        let pw = |i: usize, d: f32| w.get(i).copied().unwrap_or(d);
-        let err_w = pw(3, 50.0).max(90.0);
+        let l = fmt::loc();
+        let free_text = self
+            .disk
+            .as_ref()
+            .map(|d| format!("{}: {} ({} {})", tr("Free Space"), fmt::format_bytes_short_in(d.free, l), of_word(), fmt::format_bytes_short_in(d.total, l)))
+            .unwrap_or_default();
+        let cluster_text = self
+            .disk
+            .as_ref()
+            .filter(|d| d.cluster > 0)
+            .map(|d| format!("{}{}{}", fmt::group_int(d.cluster as u64), tr(" Bytes per Cluster"), if d.fs.is_empty() { String::new() } else { format!(" ({})", d.fs) }))
+            .unwrap_or_default();
+        let err_text = |n: usize| format!("{} {}", fmt::group_int(n as u64), tr("Errors"));
         ui.horizontal(|ui| {
             if let Some(h) = &self.handle {
                 let f = h.progress.files.load(Ordering::Relaxed);
                 let d = h.progress.dirs.load(Ordering::Relaxed);
                 let b = h.progress.bytes.load(Ordering::Relaxed);
+                let errs = h.progress.errors.load(Ordering::Relaxed) as usize;
                 let cur = h.progress.current.lock().map(|c| c.clone()).unwrap_or_default();
-                cell(ui, pw(0, 210.0), |ui| {
+                cell(ui, 230.0, |ui| {
                     scan_marker(ui, 12.0);
-                    ui.add(egui::Label::new(tr("Scanning")).truncate());
+                    ui.add(egui::Label::new(if free_text.is_empty() { tr("Scanning") } else { free_text.clone() }).truncate());
                 });
-                cell(ui, pw(1, 120.0), |ui| {
+                cell(ui, 110.0, |ui| {
                     ui.add(egui::Label::new(format_bytes(b)).truncate());
                 });
-                cell(ui, pw(2, 100.0), |ui| {
-                    ui.add(egui::Label::new(format!("{f} {}", tr("Files"))).truncate());
+                cell(ui, 120.0, |ui| {
+                    ui.add(egui::Label::new(format!("{} {}", fmt::group_int(f), tr("Files"))).truncate());
                 });
-                cell(ui, err_w, |ui| {
-                    ui.add(egui::Label::new(format!("{d} {}", tr("Folders"))).truncate());
+                cell(ui, 110.0, |ui| {
+                    ui.add(egui::Label::new(format!("{} {}", fmt::group_int(d), tr("Folders"))).truncate());
                 });
+                if errs > 0 {
+                    cell(ui, 100.0, |ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::hover());
+                        paint::error_badge(ui.painter(), r.center(), 6.5);
+                        ui.label(err_text(errs));
+                    });
+                }
                 cell(ui, 130.0, |ui| {
                     let frac = self.scan_total.filter(|&t| t > 0).map(|t| (b as f32 / t as f32).min(0.99));
                     progress_bar(ui, frac);
@@ -792,27 +965,34 @@ impl App {
                 ui.add(egui::Label::new(format!("{cur}{}", if self.notice.is_empty() { String::new() } else { format!(" | {}", self.notice) })).truncate());
             } else if let Some(l) = &self.loaded {
                 let Some(r) = l.tree.root() else { return };
-                let (size, alloc, files, dirs) = (r.size, r.alloc, r.files, r.dirs);
-                cell(ui, pw(0, 210.0), |ui| {
-                    ui.add(egui::Label::new(self.status.clone()).truncate());
+                let (alloc, files, dirs) = (r.alloc, r.files, r.dirs);
+                cell(ui, 250.0, |ui| {
+                    ui.add(egui::Label::new(if free_text.is_empty() { self.status.clone() } else { free_text.clone() }).truncate());
                 });
-                cell(ui, pw(1, 120.0), |ui| {
-                    ui.add(egui::Label::new(format_bytes(size)).truncate());
+                cell(ui, 130.0, |ui| {
+                    ui.add(egui::Label::new(format!("{} {}", fmt::group_int(files), tr("Files"))).truncate());
                 });
-                cell(ui, pw(2, 100.0), |ui| {
-                    ui.add(egui::Label::new(format!("{files} {}", tr("Files"))).truncate());
-                });
-                cell(ui, err_w, |ui| {
-                    if !l.error_list.is_empty() && ui.link(format!("{} {}", l.error_list.len(), tr("errors"))).clicked() {
-                        self.show_errors = !self.show_errors;
+                cell(ui, 110.0, |ui| {
+                    if !l.error_list.is_empty() {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::hover());
+                        paint::error_badge(ui.painter(), r.center(), 6.5);
+                        if ui.link(err_text(l.error_list.len())).clicked() {
+                            self.show_errors = !self.show_errors;
+                        }
                     }
                 });
+                if !cluster_text.is_empty() {
+                    cell(ui, 220.0, |ui| {
+                        ui.add(egui::Label::new(cluster_text.clone()).truncate());
+                    });
+                }
                 ui.add(
                     egui::Label::new(format!(
-                        "{} {}, {dirs} {}, {:.2?}{}{}",
+                        "{} - {} {} {}, {:.2?}{}{}",
+                        self.status,
                         format_bytes(alloc),
                         tr("on disk"),
-                        tr("Folders"),
+                        format_args!("{} {}", fmt::group_int(dirs), tr("Folders")),
                         l.elapsed,
                         if l.cancelled { format!(" ({})", tr("partial")) } else { String::new() },
                         if self.notice.is_empty() { String::new() } else { format!(" | {}", self.notice) }
@@ -820,7 +1000,7 @@ impl App {
                     .truncate(),
                 );
             } else {
-                cell(ui, pw(0, 210.0), |ui| {
+                cell(ui, 210.0, |ui| {
                     ui.add(egui::Label::new(self.status.clone()).truncate());
                 });
             }
@@ -881,165 +1061,215 @@ impl App {
         let mut actions: Vec<Action> = Vec::new();
         let mut new_sort: Option<SortCol> = None;
         let (sort, desc) = (self.sort, self.desc);
+        let saved_widths = self.settings.col_widths.clone();
+        let mut cur_widths: Vec<f32> = Vec::new();
         let Some(loaded) = &self.loaded else { return };
         let tree = &loaded.tree;
         let rows = &self.rows;
         let expanded = &self.expanded;
+        let files_expanded = &self.files_expanded;
         let filtering = self.filter_set.is_some();
         let selected = self.selected;
         let chev = self.chevrons.as_ref();
         let row_h = 20.0;
-        let pct_fill = if ui.visuals().dark_mode { Color32::from_rgb(70, 140, 70) } else { Color32::from_rgb(120, 190, 120) };
+        let dark = ui.visuals().dark_mode;
+        let (pct_l, pct_r) = if dark { (Color32::from_rgb(52, 52, 190), Color32::from_rgb(120, 112, 255)) } else { (Color32::from_rgb(110, 110, 230), Color32::from_rgb(170, 160, 255)) };
+        let bar_col = |bold: bool| match (dark, bold) {
+            (true, false) => Color32::from_rgb(56, 56, 70),
+            (true, true) => Color32::from_rgb(80, 80, 124),
+            (false, false) => Color32::from_rgb(214, 216, 236),
+            (false, true) => Color32::from_rgb(168, 172, 222),
+        };
+        let numeric = |c: SortCol| matches!(c, SortCol::Size | SortCol::Alloc | SortCol::Files | SortCol::Folders);
 
         let header_cell = |ui: &mut egui::Ui, label: &str, col: SortCol, new_sort: &mut Option<SortCol>| {
-            let arrow = if sort == col { if desc { " v" } else { " ^" } } else { "" };
-            if ui
-                .add(egui::Label::new(RichText::new(format!("{label}{arrow}")).strong()).sense(Sense::click()).truncate())
-                .clicked()
-            {
-                *new_sort = Some(col);
-            }
+            let layout = if numeric(col) { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+            ui.with_layout(layout, |ui| {
+                let arrow = |ui: &mut egui::Ui| {
+                    if sort == col {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                        paint::sort_arrow(ui.painter(), r.center(), desc, ui.visuals().text_color());
+                    }
+                };
+                if numeric(col) {
+                    arrow(ui);
+                }
+                let r = ui.add(egui::Label::new(RichText::new(label)).sense(Sense::click()).truncate());
+                if r.clicked() {
+                    *new_sort = Some(col);
+                }
+                if !numeric(col) {
+                    arrow(ui);
+                }
+            });
+        };
+        let right_label = |ui: &mut egui::Ui, text: String, bold: bool| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(4.0);
+                let t = RichText::new(text);
+                ui.label(if bold { t.strong() } else { t });
+            });
         };
 
         let mut table = TableBuilder::new(ui)
-            .striped(true)
+            .striped(!dark)
             .resizable(true)
             .sense(Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
         for (i, c) in cols.iter().enumerate() {
-            let col = match c {
-                SortCol::Name => Column::initial(380.0).at_least(120.0).clip(true),
-                SortCol::Size | SortCol::Alloc => Column::initial(90.0).at_least(50.0).clip(true),
-                SortCol::Percent => Column::initial(150.0).at_least(60.0).clip(true),
-                SortCol::Files | SortCol::Folders => Column::initial(70.0).at_least(40.0).clip(true),
-                SortCol::Modified => Column::initial(130.0).at_least(110.0).clip(true),
+            let default = match c {
+                SortCol::Name => 400.0,
+                SortCol::Size | SortCol::Alloc => 100.0,
+                SortCol::Percent => 110.0,
+                SortCol::Files | SortCol::Folders => 80.0,
+                SortCol::Modified => 110.0,
             };
+            let w = saved_widths.iter().find(|(k, _)| k == c).map(|(_, w)| *w).filter(|w| w.is_finite() && *w >= 30.0).unwrap_or(default);
+            let col = Column::initial(w).at_least(if *c == SortCol::Name { 140.0 } else { 44.0 }).clip(true);
             table = table.column(if i + 1 == cols.len() { Column::remainder().at_least(60.0).clip(true) } else { col });
         }
         table
-            .header(22.0, |mut h| {
+            .header(24.0, |mut h| {
                 for (c, cap) in cols.iter().zip(&captions) {
                     h.col(|ui| header_cell(ui, cap, *c, &mut new_sort));
                 }
             })
             .body(|body| {
+                cur_widths = body.widths().to_vec();
                 // Virtualised: only the visible rows are laid out.
-                body.rows(row_h, rows.len(), |mut row| {
-                    let (id, depth) = rows[row.index()];
+                body.rows(row_h, rows.len(), |mut trow| {
+                    let r = rows[trow.index()];
+                    let depth = r.depth;
+                    let pseudo = matches!(r.kind, RowKind::Files(_));
+                    let (id, dir_for_files) = match r.kind {
+                        RowKind::Node(i) => (i, NONE),
+                        RowKind::Files(d) => (d, d),
+                    };
                     let n = tree.get(id);
-                    row.set_selected(selected == Some(id));
+                    let metric = |x: &scan::model::Node| if by_alloc { x.alloc } else { x.size };
+                    // Per-row values (a Files row aggregates the direct files of folder `id`).
+                    let (name, size, alloc, files, dirs, modified, num, den, is_dir, is_link, scanning, can_open, open) = if pseudo {
+                        let f = r.files;
+                        (files_label(f.count), f.size, f.alloc, Some(f.count), None, f.modified, if by_alloc { f.alloc } else { f.size }, metric(n), false, false, false, tree.has_file_nodes() && f.count > 0, files_expanded.contains(&id))
+                    } else {
+                        let den = if n.parent == NONE { 0 } else { metric(tree.get(n.parent)) };
+                        (n.name.clone(), n.size, n.alloc, n.is_dir.then_some(n.files), n.is_dir.then_some(n.dirs), n.modified, metric(n), den, n.is_dir, n.is_link, n.scanning, expandable(tree, id), filtering || expanded.contains(&id))
+                    };
+                    let is_root = !pseudo && n.parent == NONE;
+                    let frac = if is_root { 1.0 } else if den > 0 { (num as f64 / den as f64).min(1.0) } else { 0.0 };
+                    if !pseudo {
+                        trow.set_selected(selected == Some(id));
+                    }
                     for &c in &cols {
-                        row.col(|ui| match c {
+                        trow.col(|ui| match c {
                             SortCol::Name => {
                                 ui.add_space(depth as f32 * 14.0);
-                                let expandable = n.is_dir && !n.children.is_empty();
-                                if expandable {
-                                    let open = filtering || expanded.contains(&id);
-                                    let size = egui::vec2(11.0, 11.0);
-                                    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-                                    if let Some(c) = chev {
+                                if can_open {
+                                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), Sense::click());
+                                    if let Some(ch) = chev {
                                         let tex = match (open, resp.hovered()) {
-                                            (true, true) => &c.opened_hot,
-                                            (true, false) => &c.opened,
-                                            (false, true) => &c.closed_hot,
-                                            (false, false) => &c.closed,
+                                            (true, true) => &ch.opened_hot,
+                                            (true, false) => &ch.opened,
+                                            (false, true) => &ch.closed_hot,
+                                            (false, false) => &ch.closed,
                                         };
                                         egui::Image::new(tex).paint_at(ui, rect);
                                     } else {
-                                        ui.painter().text(
-                                            rect.center(),
-                                            egui::Align2::CENTER_CENTER,
-                                            if open { "v" } else { ">" },
-                                            egui::FontId::monospace(10.0),
-                                            ui.visuals().text_color(),
-                                        );
+                                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, if open { "v" } else { ">" }, egui::FontId::monospace(10.0), ui.visuals().text_color());
                                     }
                                     if resp.clicked() {
-                                        actions.push(Action::Toggle(id));
+                                        actions.push(if pseudo { Action::ToggleFiles(dir_for_files) } else { Action::Toggle(id) });
                                     }
                                 } else {
                                     ui.add_space(11.0 + ui.spacing().item_spacing.x);
                                 }
-                                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 8.0), Sense::hover());
-                                let col = if n.is_link {
-                                    Color32::from_rgb(150, 150, 200)
-                                } else if n.is_dir {
-                                    Color32::from_rgb(240, 190, 60)
+                                let (ir, _) = ui.allocate_exact_size(egui::vec2(16.0, 13.0), Sense::hover());
+                                if pseudo || !is_dir {
+                                    paint::page(ui.painter(), egui::Rect::from_center_size(ir.center(), egui::vec2(10.0, 13.0)), pseudo);
                                 } else {
-                                    Color32::from_rgb(170, 170, 170)
-                                };
-                                ui.painter().rect_filled(r, 1.0, col);
-                                let mut t = RichText::new(&n.name);
-                                if n.is_link {
+                                    paint::folder(ui.painter(), ir, is_link);
+                                }
+                                // Size bar behind "<size>  <name>", as in the original name column.
+                                let cell = ui.max_rect();
+                                if !is_root && size > 0 {
+                                    let start = ui.cursor().min.x;
+                                    let w = ((cell.right() - start) * frac as f32).max(2.0);
+                                    let bar = egui::Rect::from_min_size(egui::pos2(start, cell.top() + 1.0), egui::vec2(w, cell.height() - 2.0));
+                                    ui.painter().rect_filled(bar, 0.0, bar_col(r.bold));
+                                }
+                                ui.allocate_ui_with_layout(egui::vec2(70.0, cell.height()), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let t = RichText::new(format_bytes(if by_alloc && !is_root { alloc } else { size }));
+                                    ui.label(if r.bold { t.strong() } else { t });
+                                });
+                                ui.add_space(4.0);
+                                let mut t = RichText::new(&name);
+                                if is_link {
                                     t = t.italics();
                                 }
+                                if r.bold || is_root {
+                                    t = t.strong();
+                                }
                                 ui.add(egui::Label::new(t).truncate());
-                                if n.scanning {
+                                if scanning {
                                     scan_marker(ui, 10.0);
                                     ui.label(RichText::new(format!("{}...", tr("Scanning"))).weak().small());
                                 }
                             }
-                            SortCol::Size => {
-                                ui.label(format_bytes(n.size));
-                            }
-                            SortCol::Alloc => {
-                                ui.label(format_bytes(n.alloc));
-                            }
+                            SortCol::Size => right_label(ui, format_bytes(size), r.bold),
+                            SortCol::Alloc => right_label(ui, format_bytes(alloc), r.bold),
                             SortCol::Percent => {
-                                let metric = |x: &scan::model::Node| if by_alloc { x.alloc } else { x.size };
-                                let pct = if n.parent == NONE {
-                                    1.0
-                                } else {
-                                    let ps = metric(tree.get(n.parent));
-                                    if ps > 0 { metric(n) as f64 / ps as f64 } else { 0.0 }
-                                };
                                 let w = ui.available_width().max(10.0);
-                                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 14.0), Sense::hover());
-                                ui.painter().rect_filled(rect, 1.0, ui.visuals().extreme_bg_color);
-                                let mut fill = rect;
-                                fill.set_width(rect.width() * pct as f32);
-                                ui.painter().rect_filled(fill, 1.0, pct_fill);
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    format!("{:.1}%", pct * 100.0),
-                                    egui::FontId::proportional(11.0),
-                                    ui.visuals().text_color(),
-                                );
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 15.0), Sense::hover());
+                                ui.painter().rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+                                let mut fill = rect.shrink(1.0);
+                                fill.set_width((rect.width() - 2.0) * frac as f32);
+                                paint::gradient(ui.painter(), fill, pct_l, pct_r);
+                                ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::from_gray(if dark { 150 } else { 170 })), egui::StrokeKind::Inside);
+                                let txt = fmt::percent(frac);
+                                let col = if dark { Color32::WHITE } else { Color32::BLACK };
+                                let font = egui::FontId::proportional(11.5);
+                                if r.bold {
+                                    ui.painter().text(rect.center() + egui::vec2(0.4, 0.0), egui::Align2::CENTER_CENTER, &txt, font.clone(), col);
+                                }
+                                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, txt, font, col);
                             }
                             SortCol::Files => {
-                                if n.is_dir {
-                                    ui.label(n.files.to_string());
+                                if let Some(f) = files {
+                                    right_label(ui, fmt::group_int(f), r.bold);
                                 }
                             }
                             SortCol::Folders => {
-                                if n.is_dir {
-                                    ui.label(n.dirs.to_string());
+                                if let Some(d) = dirs {
+                                    right_label(ui, fmt::group_int(d), r.bold);
                                 }
                             }
                             SortCol::Modified => {
-                                ui.label(format_time(n.modified));
+                                let t = RichText::new(fmt::format_date(modified));
+                                ui.label(if r.bold { t.strong() } else { t });
                             }
                         });
                     }
-                    let resp = row.response();
-                    if resp.clicked() {
+                    let resp = trow.response();
+                    if resp.clicked() && !pseudo {
                         actions.push(Action::Select(id));
+                    }
+                    if resp.double_clicked() && pseudo && can_open {
+                        actions.push(Action::ToggleFiles(dir_for_files));
                     }
                     resp.context_menu(|ui| {
                         if ui.button(tr("Open in Explorer")).clicked() {
                             actions.push(Action::OpenExplorer(id));
                             ui.close();
                         }
-                        if ui.button(tr("Copy path")).clicked() {
+                        if !pseudo && ui.button(tr("Copy path")).clicked() {
                             actions.push(Action::CopyPath(id));
                             ui.close();
                         }
-                        if ui.button(tr("Properties")).clicked() {
+                        if !pseudo && ui.button(tr("Properties")).clicked() {
                             actions.push(Action::Properties(id));
                             ui.close();
                         }
-                        if id != Tree::ROOT && ui.button(tr("Exclude")).clicked() {
+                        if !pseudo && id != Tree::ROOT && ui.button(tr("Exclude")).clicked() {
                             actions.push(Action::Exclude(id));
                             ui.close();
                         }
@@ -1050,39 +1280,32 @@ impl App {
         if let Some(c) = new_sort {
             self.set_sort(c);
         }
-        let ctx = ui.ctx().clone();
-        self.apply(&ctx, actions);
-    }
-
-    fn toolbar_options(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut self.fast_ntfs, tr("Fast NTFS scan (admin)"))
-                .on_hover_text(tr("Reads the MFT directly; needs an elevated process and a whole drive. Falls back to the normal scan otherwise."));
-            ui.separator();
-            ui.add_enabled_ui(self.loaded.is_some(), |ui| {
-                ui.menu_button(tr("Export"), |ui| {
-                    for (label, fmt) in [("CSV...", export::Format::Csv), ("HTML report...", export::Format::Html), ("JSON...", export::Format::Json)] {
-                        if ui.button(tr(label)).clicked() {
-                            ui.close();
-                            self.export(fmt);
-                        }
-                    }
-                });
-            });
-            ui.toggle_value(&mut self.show_filters, tr("Filters"));
-            ui.separator();
-            for (v, label) in [
-                (ViewKind::Tree, "Tree"),
-                (ViewKind::Treemap, "Treemap"),
-                (ViewKind::Chart, "Chart"),
-                (ViewKind::Types, "File types"),
-                (ViewKind::Largest, "Top 100 files"),
-                (ViewKind::Oldest, "Oldest files"),
-                (ViewKind::Duplicates, "Duplicates"),
-            ] {
-                ui.selectable_value(&mut self.view, v, tr(label));
+        // Persist user-resized column widths once they stop changing.
+        let mut needs_repaint = false;
+        let widths: Vec<(SortCol, f32)> = cols.iter().copied().zip(cur_widths.iter().copied()).take(cols.len().saturating_sub(1)).collect();
+        let stored_differs = widths.iter().any(|(k, w)| self.settings.col_widths.iter().find(|(sk, _)| sk == k).is_none_or(|(_, sw)| (sw - w).abs() > 0.5));
+        if stored_differs {
+            let changed = widths.len() != self.col_live.len() || widths.iter().zip(&self.col_live).any(|(a, b)| a.0 != b.0 || (a.1 - b.1).abs() > 0.5);
+            if changed {
+                self.col_live = widths.clone();
+                self.col_changed = Instant::now();
             }
-        });
+            if self.col_changed.elapsed() > Duration::from_millis(600) {
+                for (k, w) in &widths {
+                    match self.settings.col_widths.iter_mut().find(|(mk, _)| mk == k) {
+                        Some(e) => e.1 = *w,
+                        None => self.settings.col_widths.push((*k, *w)),
+                    }
+                }
+            } else {
+                needs_repaint = true;
+            }
+        }
+        let ctx = ui.ctx().clone();
+        if needs_repaint {
+            ctx.request_repaint_after(Duration::from_millis(650));
+        }
+        self.apply(&ctx, actions);
     }
 
     fn apply_filter_inputs(&mut self) {
@@ -1203,6 +1426,23 @@ impl App {
         if start {
             self.start_duplicates();
         }
+        if let Some(live) = self.loaded.as_ref().and_then(|l| l.tree.live.as_ref().map(|x| (&l.tree, x))) {
+            // Scan running: candidates are same-size files among the largest ones seen so far.
+            let (tree, live) = live;
+            let cands = types::live_size_candidates(&live.largest);
+            ui.label(RichText::new(format!("{} {}", cands.len(), tr("duplicate groups"))).strong());
+            ui.weak(tr("Candidates by size while the scan runs; hashing starts when it ends."));
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for (size, files) in cands.iter().take(500) {
+                    egui::CollapsingHeader::new(format!("{} x {} {}", format_bytes(*size), files.len(), tr("copies"))).id_salt(("cand", *size)).show(ui, |ui| {
+                        for f in files {
+                            ui.label(tree.path_of(f.dir).join(&f.name).display().to_string());
+                        }
+                    });
+                }
+            });
+            return;
+        }
         let Some(groups) = &self.dup_result else {
             ui.label(tr("Groups files by size, then by a partial hash, then by a full BLAKE3 hash."));
             return;
@@ -1254,14 +1494,24 @@ impl App {
         if self.view_root as usize >= self.loaded.as_ref().map_or(0, |l| l.tree.nodes.len()) {
             self.view_root = Tree::ROOT;
         }
+        // Live snapshots carry bounded aggregates / top lists instead of file nodes.
         if self.types_cache.is_none() {
-            self.types_cache = self.loaded.as_ref().map(|l| types::aggregate_by_extension(&l.tree, Tree::ROOT));
+            self.types_cache = self.loaded.as_ref().map(|l| match &l.tree.live {
+                Some(live) => types::stats_from_live(&live.types),
+                None => types::aggregate_by_extension(&l.tree, Tree::ROOT),
+            });
         }
         if self.largest_cache.is_none() {
-            self.largest_cache = self.loaded.as_ref().map(|l| types::largest_files(&l.tree, Tree::ROOT, 100));
+            self.largest_cache = self.loaded.as_ref().map(|l| match &l.tree.live {
+                Some(live) => views::rows_from_live(&l.tree, &live.largest),
+                None => views::rows_from_ids(&l.tree, &types::largest_files(&l.tree, Tree::ROOT, 100)),
+            });
         }
         if self.oldest_cache.is_none() {
-            self.oldest_cache = self.loaded.as_ref().map(|l| types::oldest_files(&l.tree, Tree::ROOT, 100));
+            self.oldest_cache = self.loaded.as_ref().map(|l| match &l.tree.live {
+                Some(live) => views::rows_from_live(&l.tree, &live.oldest),
+                None => views::rows_from_ids(&l.tree, &types::oldest_files(&l.tree, Tree::ROOT, 100)),
+            });
         }
         let Some(l) = &self.loaded else { return };
         let tree = &l.tree;
@@ -1271,16 +1521,17 @@ impl App {
             ViewKind::Chart => views::chart_view(ui, tree, &mut self.view_root),
             ViewKind::Types => views::types_view(ui, self.types_cache.as_deref().unwrap_or(&[])),
             ViewKind::Largest => {
-                ev = views::file_list_view(ui, tree, self.largest_cache.as_deref().unwrap_or(&[]), "largest", self.selected)
+                ev = views::file_list_view(ui, self.largest_cache.as_deref().unwrap_or(&[]), "largest", self.selected)
             }
             ViewKind::Oldest => {
-                ev = views::file_list_view(ui, tree, self.oldest_cache.as_deref().unwrap_or(&[]), "oldest", self.selected)
+                ev = views::file_list_view(ui, self.oldest_cache.as_deref().unwrap_or(&[]), "oldest", self.selected)
             }
             ViewKind::Tree | ViewKind::Duplicates => {}
         }
         match ev {
             Some(ListEvent::Select(id)) => self.selected = Some(id),
             Some(ListEvent::Open(id)) => open_in_explorer(&tree.path_of(id)),
+            Some(ListEvent::OpenPath(p)) => open_in_explorer(std::path::Path::new(&p)),
             None => {}
         }
     }
@@ -1309,13 +1560,24 @@ impl App {
         if self.settings.language != self.lang_applied {
             let eff = i18n::set_language(&i18n::resolve_language(&self.settings.language));
             assets::install_language_fonts(ctx, &eff);
+            fmt::set_locale(&eff);
+            self.sorted.clear();
+            self.rows_dirty = true;
             self.lang_applied = self.settings.language.clone();
             self.status = if self.loaded.is_some() { tr("Scan complete") } else { tr("Ready") };
         }
-        if self.theme_applied != Some(self.settings.theme) {
-            ctx.set_visuals(visuals_for(self.settings.theme));
-            self.chevrons = Chevrons::load(ctx, self.settings.theme == Theme::Dark);
-            self.theme_applied = Some(self.settings.theme);
+        if self.settings.theme == Theme::Auto {
+            if self.sys_checked.elapsed() > Duration::from_secs(2) {
+                self.system_dark = settings::system_dark();
+                self.sys_checked = Instant::now();
+            }
+            ctx.request_repaint_after(Duration::from_secs(2));
+        }
+        let dark = self.settings.theme.is_dark(self.system_dark);
+        if self.dark_applied != Some(dark) {
+            ctx.set_visuals(visuals_for(dark));
+            self.chevrons = Chevrons::load(ctx, dark);
+            self.dark_applied = Some(dark);
         }
         scan::set_units(self.settings.units);
     }
@@ -1402,18 +1664,6 @@ impl App {
         if !live && self.loaded.is_some() && self.handle.is_none() && self.view == ViewKind::Duplicates && self.dup_result.is_none() && self.dup_run.is_none() {
             self.dup_min = "1".into();
             self.start_duplicates();
-        }
-        let mut expand: Vec<NodeId> = Vec::new();
-        if ready && self.shot.as_ref().is_some_and(|s| !s.prepared) {
-            if let Some(l) = &self.loaded {
-                let mut kids: Vec<NodeId> = l.tree.get(Tree::ROOT).children.iter().copied().filter(|&c| l.tree.get(c).is_dir && !l.tree.get(c).children.is_empty()).collect();
-                kids.sort_by_key(|&c| std::cmp::Reverse(l.tree.get(c).size));
-                expand = kids.into_iter().take(3).collect();
-            }
-        }
-        if !expand.is_empty() {
-            self.expanded.extend(expand);
-            self.rows_dirty = true;
         }
         let Some(shot) = self.shot.as_mut() else { return };
         if !ready {
@@ -1551,11 +1801,9 @@ impl eframe::App for App {
         self.handle_keys(&ctx);
         let mut cmd = None;
         egui::Panel::top("toolbar").show(ui, |ui| {
-            cmd = cmd.or(self.menu_bar(ui));
+            cmd = cmd.or(self.ribbon(ui));
             ui.add_space(2.0);
-            cmd = cmd.or(self.toolbar(ui));
             self.path_row(ui);
-            self.toolbar_options(ui);
             if self.show_filters {
                 self.filter_bar(ui);
             }
@@ -1648,5 +1896,48 @@ mod tests {
         let back = image::open(&p).unwrap().to_rgba8();
         assert_eq!(back.dimensions(), (3, 2));
         assert_eq!(back.get_pixel(0, 0).0, [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn files_row_is_aggregated_sorted_and_flagged() {
+        use scan::model::Node;
+        let n = |name: &str, parent, children: Vec<NodeId>, is_dir, size, modified| Node {
+            name: name.into(),
+            parent,
+            children,
+            size,
+            alloc: size,
+            files: 0,
+            dirs: 0,
+            modified,
+            attrs: 0,
+            is_dir,
+            is_link: false,
+            scanning: false,
+        };
+        // R -> [big dir (500), f1 (100), f2 (30)]
+        let t = Tree {
+            nodes: vec![
+                n("R", NONE, vec![1, 2, 3], true, 630, 0),
+                n("big", 0, vec![], true, 500, 5),
+                n("f1", 0, vec![], false, 100, 9),
+                n("f2", 0, vec![], false, 30, 7),
+            ],
+            ..Default::default()
+        };
+        let sib = build_sib(&t, 0, false, SortCol::Size, true);
+        assert_eq!(sib.order, vec![RowKind::Node(1), RowKind::Files(0)], "files collapse into one pseudo-row");
+        assert_eq!((sib.files.count, sib.files.size, sib.files.modified), (2, 130, 9));
+        assert_eq!(sib.top, vec![RowKind::Node(1), RowKind::Files(0)]);
+        let by_name = build_sib(&t, 0, false, SortCol::Name, false);
+        assert_eq!(by_name.order[0], RowKind::Files(0), "[2 Files] sorts before 'big'");
+        // filtering lists the files individually
+        let f = build_sib(&t, 0, true, SortCol::Size, true);
+        assert_eq!(f.order, vec![RowKind::Node(1), RowKind::Node(2), RowKind::Node(3)]);
+        assert_eq!(files_label_with("[%d Files]", 30), "[30 Files]");
+        assert!(expandable(&t, 0) && !expandable(&t, 2));
+        // a live snapshot has no file nodes but still reports direct files
+        let live = Tree::placeholder("R");
+        assert!(!expandable(&live, 0));
     }
 }

@@ -1,5 +1,6 @@
 //! File-type aggregation and rankings computed from the arena.
 
+use crate::scan::model::{ExtAgg, RankedFile};
 use crate::scan::{NodeId, Tree};
 use std::collections::HashMap;
 
@@ -139,6 +140,36 @@ pub fn aggregate_by_extension(tree: &Tree, root: NodeId) -> Vec<TypeStat> {
         })
         .collect();
     v.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.ext.cmp(&b.ext)));
+    v
+}
+
+/// Per-extension rows from the aggregates streamed with a live snapshot (sorted by size).
+pub fn stats_from_live(aggs: &[ExtAgg]) -> Vec<TypeStat> {
+    let total: u64 = aggs.iter().map(|a| a.size).sum();
+    let mut v: Vec<TypeStat> = aggs
+        .iter()
+        .map(|a| TypeStat {
+            category: category_of(&a.ext),
+            percent: if total > 0 { a.size as f64 * 100.0 / total as f64 } else { 0.0 },
+            ext: a.ext.clone(),
+            count: a.count,
+            size: a.size,
+            alloc: a.alloc,
+        })
+        .collect();
+    v.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.ext.cmp(&b.ext)));
+    v
+}
+
+/// Duplicate candidates among the streamed largest files: groups of 2+ files with the same size
+/// (not hashed yet), biggest first.
+pub fn live_size_candidates(files: &[RankedFile]) -> Vec<(u64, Vec<&RankedFile>)> {
+    let mut by: HashMap<u64, Vec<&RankedFile>> = HashMap::new();
+    for f in files.iter().filter(|f| f.size > 0) {
+        by.entry(f.size).or_default().push(f);
+    }
+    let mut v: Vec<(u64, Vec<&RankedFile>)> = by.into_iter().filter(|(_, g)| g.len() > 1).collect();
+    v.sort_by_key(|g| std::cmp::Reverse(g.0));
     v
 }
 
@@ -302,5 +333,21 @@ mod tests {
         assert_eq!(s[1].name, "Other");
         assert_eq!(s[1].node, None);
         assert_eq!(s[0].size + s[1].size, t.get(0).size);
+    }
+
+    #[test]
+    fn live_aggregates_become_type_rows_and_candidates() {
+        let aggs = vec![
+            ExtAgg { ext: "dll".into(), count: 3, size: 300, alloc: 400 },
+            ExtAgg { ext: "txt".into(), count: 1, size: 100, alloc: 4096 },
+        ];
+        let v = stats_from_live(&aggs);
+        assert_eq!((v[0].ext.as_str(), v[0].count, v[0].category), ("dll", 3, Category::Executables));
+        assert!((v[0].percent - 75.0).abs() < 1e-9 && (v[1].percent - 25.0).abs() < 1e-9);
+        let rf = |n: &str, size| RankedFile { dir: 0, name: n.into(), size, modified: 1 };
+        let files = vec![rf("a", 50), rf("b", 50), rf("c", 70), rf("d", 0), rf("e", 0)];
+        let c = live_size_candidates(&files);
+        assert_eq!(c.len(), 1, "only same-size groups of 2+, empty files ignored");
+        assert_eq!((c[0].0, c[0].1.len()), (50, 2));
     }
 }

@@ -1,11 +1,12 @@
 //! Parallel directory walker. Builds a temporary owned tree with rayon,
 //! then flattens it into the arena `Tree`.
 
-use super::model::{Node, NodeId, Tree, NONE};
+use super::model::{DirectFiles, ExtAgg, LiveStats, Node, NodeId, RankedFile, Tree, NONE};
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -71,9 +72,46 @@ struct LDir {
 
 /// Shared, lock-protected directory skeleton that the ticker turns into partial `Tree` snapshots.
 /// Children always have a larger index than their parent.
-#[derive(Default)]
 struct Live {
     dirs: Mutex<Vec<LDir>>,
+    /// extension -> (count, size, alloc) of every file seen so far.
+    types: Mutex<HashMap<String, (u64, u64, u64)>>,
+    top: Mutex<Top>,
+    /// Smallest size currently kept in the (full) largest list: smaller files are not offered.
+    largest_floor: AtomicU64,
+    /// Newest mtime currently kept in the (full) oldest list: newer files are not offered.
+    oldest_ceil: AtomicI64,
+}
+
+impl Default for Live {
+    fn default() -> Self {
+        Live {
+            dirs: Mutex::default(),
+            types: Mutex::default(),
+            top: Mutex::default(),
+            largest_floor: AtomicU64::new(0),
+            oldest_ceil: AtomicI64::new(i64::MAX),
+        }
+    }
+}
+
+/// Size of the streamed "Top N" lists.
+pub const TOP_N: usize = 100;
+
+#[derive(Default)]
+struct Top {
+    largest: Vec<RankedFile>,
+    oldest: Vec<RankedFile>,
+}
+
+fn trim_largest(v: &mut Vec<RankedFile>) {
+    v.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.name.cmp(&b.name)));
+    v.truncate(TOP_N);
+}
+
+fn trim_oldest(v: &mut Vec<RankedFile>) {
+    v.sort_by(|a, b| a.modified.cmp(&b.modified).then_with(|| a.name.cmp(&b.name)));
+    v.truncate(TOP_N);
 }
 
 impl Live {
@@ -91,6 +129,58 @@ impl Live {
         let mut d = self.dirs.lock().unwrap_or_else(|e| e.into_inner());
         let n = &mut d[id as usize];
         (n.size, n.alloc, n.files, n.dir_links) = (size, alloc, files, dir_links);
+    }
+
+    /// Fold the files of one directory into the live aggregates and the bounded top lists.
+    fn record_files(&self, lid: NodeId, entries: &[TNode]) {
+        let mut local: HashMap<String, (u64, u64, u64)> = HashMap::new();
+        let floor = self.largest_floor.load(Ordering::Relaxed);
+        let ceil = self.oldest_ceil.load(Ordering::Relaxed);
+        let (mut big, mut old): (Vec<&TNode>, Vec<&TNode>) = (Vec::new(), Vec::new());
+        for f in entries.iter().filter(|f| !f.is_dir && !f.is_link) {
+            let e = local.entry(crate::analysis::types::ext_of(&f.name)).or_default();
+            e.0 += 1;
+            e.1 += f.size;
+            e.2 += f.alloc;
+            if f.size > floor || floor == 0 {
+                big.push(f);
+            }
+            if f.modified != 0 && f.modified < ceil {
+                old.push(f);
+            }
+        }
+        big.sort_by_key(|f| std::cmp::Reverse(f.size));
+        big.truncate(TOP_N);
+        old.sort_by_key(|f| f.modified);
+        old.truncate(TOP_N);
+        let rank = |f: &&TNode| RankedFile { dir: lid, name: f.name.clone(), size: f.size, modified: f.modified };
+        {
+            let mut t = self.types.lock().unwrap_or_else(|e| e.into_inner());
+            for (k, v) in local {
+                let e = t.entry(k).or_default();
+                e.0 += v.0;
+                e.1 += v.1;
+                e.2 += v.2;
+            }
+        }
+        if big.is_empty() && old.is_empty() {
+            return;
+        }
+        let mut top = self.top.lock().unwrap_or_else(|e| e.into_inner());
+        top.largest.extend(big.iter().map(rank));
+        top.oldest.extend(old.iter().map(rank));
+        if top.largest.len() > TOP_N * 4 {
+            trim_largest(&mut top.largest);
+            if top.largest.len() >= TOP_N {
+                self.largest_floor.store(top.largest[TOP_N - 1].size, Ordering::Relaxed);
+            }
+        }
+        if top.oldest.len() > TOP_N * 4 {
+            trim_oldest(&mut top.oldest);
+            if top.oldest.len() >= TOP_N {
+                self.oldest_ceil.store(top.oldest[TOP_N - 1].modified, Ordering::Relaxed);
+            }
+        }
     }
 
     fn finish(&self, id: NodeId) {
@@ -119,6 +209,7 @@ impl Live {
                 })
                 .collect()
         };
+        let direct: Vec<DirectFiles> = nodes.iter().map(|n| DirectFiles { count: n.files, size: n.size, alloc: n.alloc, modified: 0 }).collect();
         for i in (1..nodes.len()).rev() {
             let (size, alloc, files, dirs, parent) = {
                 let n = &nodes[i];
@@ -130,7 +221,18 @@ impl Live {
             p.files += files;
             p.dirs += 1 + dirs;
         }
-        Tree { nodes }
+        let mut types: Vec<ExtAgg> = {
+            let t = self.types.lock().unwrap_or_else(|e| e.into_inner());
+            t.iter().map(|(k, v)| ExtAgg { ext: k.clone(), count: v.0, size: v.1, alloc: v.2 }).collect()
+        };
+        types.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.ext.cmp(&b.ext)));
+        let (mut largest, mut oldest) = {
+            let t = self.top.lock().unwrap_or_else(|e| e.into_inner());
+            (t.largest.clone(), t.oldest.clone())
+        };
+        trim_largest(&mut largest);
+        trim_oldest(&mut oldest);
+        Tree { nodes, live: Some(Box::new(LiveStats { direct, types, largest, oldest })) }
     }
 }
 
@@ -305,6 +407,7 @@ fn walk(path: &Path, name: String, meta: Option<&fs::Metadata>, ctx: &Ctx, lid: 
             });
         }
     }
+    ctx.live.record_files(lid, &node.children);
     ctx.live.set_direct(lid, d_size, d_alloc, d_files, d_links);
     let sub: Vec<TNode> = subdirs
         .par_iter()
@@ -398,7 +501,7 @@ pub fn scan_live(root: &Path, progress: &Progress, cancel: &AtomicBool, excludes
     flatten(troot, NONE, &mut nodes);
     ScanResult {
         root: root.to_path_buf(),
-        tree: Tree { nodes },
+        tree: Tree { nodes, live: None },
         errors: ctx.errors.into_inner().unwrap_or_default(),
         cancelled: cancel.load(Ordering::Relaxed),
         elapsed: start.elapsed(),
@@ -436,5 +539,40 @@ mod tests {
         live.finish(a);
         let t2 = live.snapshot();
         assert!(t2.get(root).size >= t.get(root).size && !t2.get(a).scanning);
+        // direct files are reported per directory, before aggregation
+        let l = t2.live.as_ref().unwrap();
+        assert_eq!((l.direct[root as usize].count, l.direct[root as usize].size), (1, 1));
+        assert_eq!((l.direct[b as usize].count, l.direct[b as usize].size), (4, 150));
+    }
+
+    fn file(name: &str, size: u64, modified: i64) -> TNode {
+        TNode { name: name.into(), size, alloc: size, files: 0, dirs: 0, modified, attrs: 0, is_dir: false, is_link: false, children: Vec::new() }
+    }
+
+    #[test]
+    fn live_stats_aggregate_and_stay_bounded() {
+        let live = Live::default();
+        let root = live.add("R".into(), NONE, 0, 0);
+        // 3 batches of 150 files each: far more than TOP_N in total
+        for batch in 0..3u64 {
+            let files: Vec<TNode> = (0..150u64).map(|i| file(&format!("f{batch}_{i}.dat"), batch * 1000 + i, 1000 + (batch * 150 + i) as i64)).collect();
+            live.record_files(root, &files);
+        }
+        live.record_files(root, &[file("Readme.TXT", 5, 1), file("noext", 7, 2), file("junction.dat", 0, 3)]);
+        live.set_direct(root, 0, 0, 0, 0);
+        let t = live.snapshot();
+        let l = t.live.as_ref().unwrap();
+        assert_eq!(l.largest.len(), TOP_N);
+        assert_eq!(l.oldest.len(), TOP_N);
+        assert!(l.largest.windows(2).all(|w| w[0].size >= w[1].size), "largest sorted descending");
+        assert!(l.oldest.windows(2).all(|w| w[0].modified <= w[1].modified), "oldest sorted ascending");
+        assert_eq!(l.largest[0].size, 2149);
+        assert_eq!(l.oldest[0].modified, 1);
+        let dat = l.types.iter().find(|e| e.ext == "dat").unwrap();
+        assert_eq!(dat.count, 451);
+        assert!(l.types.iter().any(|e| e.ext == "txt" && e.count == 1), "extensions are lower-cased");
+        assert!(l.types.iter().any(|e| e.ext.is_empty() && e.size == 7));
+        assert_eq!(l.types.iter().map(|e| e.count).sum::<u64>(), 453);
+        assert!(l.types.windows(2).all(|w| w[0].size >= w[1].size));
     }
 }

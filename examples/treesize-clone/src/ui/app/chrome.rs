@@ -1,7 +1,7 @@
 //! DFM-driven window chrome: command mapping, menu bar / toolbar pruning and Delphi shortcuts.
 
 use crate::dfm::Item;
-use crate::settings::{SortKey, Units};
+use crate::settings::{SortKey, Units, ViewKind};
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
 /// Everything the menu bar and the toolbar can trigger.
@@ -23,6 +23,8 @@ pub enum Cmd {
     ExpandLevel(u8),
     ExpandFull,
     ExcludeSelected,
+    SetView(ViewKind),
+    ToggleFast,
 }
 
 /// Map a DFM menu/toolbar item to a command, `None` when the clone has no equivalent.

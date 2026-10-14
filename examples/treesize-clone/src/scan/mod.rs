@@ -51,6 +51,59 @@ pub fn drive_used_bytes(root: &std::path::Path) -> Option<u64> {
     (ok != 0 && total >= total_free).then_some(total - total_free)
 }
 
+/// Free / total space, cluster size and file system of the volume holding a scanned path.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiskInfo {
+    pub free: u64,
+    pub total: u64,
+    pub cluster: u32,
+    pub fs: String,
+}
+
+/// `C:\Windows\System32` -> `C:\` (first prefix + root components).
+pub fn volume_root(p: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => out.push(c.as_os_str()),
+            _ => break,
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+pub fn disk_info(path: &std::path::Path) -> Option<DiskInfo> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetVolumeInformationW};
+    let root = volume_root(path);
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    let wide: Vec<u16> = root.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut free_user, mut total, mut free) = (0u64, 0u64, 0u64);
+    // SAFETY: `wide` is NUL-terminated; the out pointers are valid for the call.
+    if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free_user, &mut total, &mut free) } == 0 {
+        return None;
+    }
+    let (mut spc, mut bps, mut fc, mut tc) = (0u32, 0u32, 0u32, 0u32);
+    // SAFETY: as above.
+    let cluster = if unsafe { GetDiskFreeSpaceW(wide.as_ptr(), &mut spc, &mut bps, &mut fc, &mut tc) } != 0 { spc * bps } else { 0 };
+    let mut fsbuf = [0u16; 32];
+    // SAFETY: only the file-system name buffer is requested; the other out pointers are null.
+    let ok = unsafe {
+        GetVolumeInformationW(wide.as_ptr(), std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), fsbuf.as_mut_ptr(), fsbuf.len() as u32)
+    };
+    let fs = if ok != 0 { String::from_utf16_lossy(&fsbuf[..fsbuf.iter().position(|&c| c == 0).unwrap_or(0)]) } else { String::new() };
+    Some(DiskInfo { free, total, cluster, fs })
+}
+
+#[cfg(not(windows))]
+pub fn disk_info(_path: &std::path::Path) -> Option<DiskInfo> {
+    None
+}
+
 #[cfg(not(windows))]
 pub fn drive_used_bytes(_root: &std::path::Path) -> Option<u64> {
     None
@@ -95,6 +148,18 @@ mod tests {
     fn write(p: &std::path::Path, n: usize) {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, vec![b'x'; n]).unwrap();
+    }
+
+    #[test]
+    fn volume_root_is_the_drive() {
+        if cfg!(windows) {
+            assert_eq!(volume_root(std::path::Path::new("C:\\Windows\\System32")), PathBuf::from("C:\\"));
+            assert_eq!(volume_root(std::path::Path::new("D:\\")), PathBuf::from("D:\\"));
+            let d = disk_info(std::path::Path::new("C:\\Windows")).expect("C: volume info");
+            assert!(d.total > d.free && d.free > 0 && d.cluster >= 512 && !d.fs.is_empty());
+        } else {
+            assert_eq!(volume_root(std::path::Path::new("/usr/lib")), PathBuf::from("/"));
+        }
     }
 
     #[test]

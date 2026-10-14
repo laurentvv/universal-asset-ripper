@@ -60,9 +60,39 @@ pub enum SizeMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Theme {
+    /// Follow the Windows app theme (light elsewhere).
     #[default]
+    Auto,
     Light,
     Dark,
+}
+
+impl Theme {
+    /// Effective darkness given the system preference.
+    pub fn is_dark(self, system_dark: bool) -> bool {
+        match self {
+            Theme::Auto => system_dark,
+            Theme::Light => false,
+            Theme::Dark => true,
+        }
+    }
+}
+
+/// Windows "apps use dark theme" preference (`AppsUseLightTheme` == 0); false when unknown.
+#[cfg(windows)]
+pub fn system_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0".encode_utf16().collect();
+    let val: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+    let (mut data, mut size) = (1u32, 4u32);
+    // SAFETY: both names are NUL-terminated; `data`/`size` are valid out pointers for a DWORD.
+    let rc = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut size) };
+    rc == 0 && data == 0
+}
+
+#[cfg(not(windows))]
+pub fn system_dark() -> bool {
+    false
 }
 
 /// Last window geometry (logical points); `None` until the first save.
@@ -93,6 +123,8 @@ pub struct Settings {
     pub size_mode: SizeMode,
     pub theme: Theme,
     pub window: Option<WindowGeom>,
+    /// Tree column widths by column (the last, flexible column is not stored).
+    pub col_widths: Vec<(SortKey, f32)>,
 }
 
 impl Default for Settings {
@@ -109,8 +141,9 @@ impl Default for Settings {
             show_allocated: true,
             details: true,
             size_mode: SizeMode::Size,
-            theme: Theme::Light,
+            theme: Theme::Auto,
             window: None,
+            col_widths: Vec::new(),
         }
     }
 }
@@ -172,6 +205,7 @@ mod tests {
             size_mode: SizeMode::Allocated,
             theme: Theme::Dark,
             window: Some(WindowGeom { w: 900.0, h: 600.0, x: Some(10.0), y: None }),
+            col_widths: vec![(SortKey::Name, 321.0), (SortKey::Size, 77.5)],
         };
         save_to(&p, &s).unwrap();
         assert_eq!(load_from(&p), s);
@@ -191,6 +225,14 @@ mod tests {
         assert_eq!(s.units, Units::Auto);
         assert!(s.show_allocated);
         assert!(s.sort_desc);
+    }
+
+    #[test]
+    fn theme_auto_follows_the_system() {
+        assert_eq!(Settings::default().theme, Theme::Auto);
+        assert!(Theme::Auto.is_dark(true) && !Theme::Auto.is_dark(false));
+        assert!(Theme::Dark.is_dark(false) && !Theme::Light.is_dark(true));
+        let _ = system_dark(); // must not panic whatever the registry holds
     }
 
     #[test]

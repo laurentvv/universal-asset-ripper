@@ -6,6 +6,7 @@ mod analysis;
 mod cli;
 mod dfm;
 mod export;
+mod fmt;
 mod i18n;
 mod scan;
 mod settings;

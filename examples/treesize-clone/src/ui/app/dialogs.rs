@@ -70,6 +70,7 @@ impl App {
 
                 ui.label(tr("Style"));
                 ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.settings.theme, Theme::Auto, tr("Detect automatically"));
                     ui.selectable_value(&mut self.settings.theme, Theme::Light, tr("Light"));
                     ui.selectable_value(&mut self.settings.theme, Theme::Dark, tr("Dark"));
                 });
