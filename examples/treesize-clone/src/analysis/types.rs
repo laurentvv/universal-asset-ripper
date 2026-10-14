@@ -201,6 +201,7 @@ pub mod testutil {
             attrs: 0,
             is_dir,
             is_link: false,
+            scanning: false,
         };
         t.nodes.push(mk("root", NONE, true, 0, 0));
         for (path, size, mtime) in files {

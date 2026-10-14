@@ -277,6 +277,7 @@ pub fn build_tree(records: Vec<Option<Record>>, volume_root: &str) -> Tree {
         attrs: root_rec.and_then(|r| r.attrs).unwrap_or(0),
         is_dir: true,
         is_link: false,
+        scanning: false,
     });
     let mut visited = vec![false; recs.len()];
     let mut stack: Vec<(u64, NodeId)> = vec![(ROOT_RECORD, 0)];
@@ -302,6 +303,7 @@ pub fn build_tree(records: Vec<Option<Record>>, volume_root: &str) -> Tree {
                 attrs,
                 is_dir: r.is_dir,
                 is_link,
+                scanning: false,
             };
             tree.nodes.push(n);
             tree.nodes[nid as usize].children.push(id);

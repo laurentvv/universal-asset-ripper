@@ -76,6 +76,12 @@ pub struct App {
     path_text: String,
     drives: Vec<String>,
     handle: Option<ScanHandle>,
+    /// A live snapshot of the running scan has been shown (ids are then remapped by path).
+    partial_seen: bool,
+    scan_started: Instant,
+    scan_root: PathBuf,
+    /// Used bytes of the drive being scanned (progress estimate); `None` = indeterminate bar.
+    scan_total: Option<u64>,
     loaded: Option<Loaded>,
     excludes: Vec<PathBuf>,
     expanded: HashSet<NodeId>,
@@ -111,6 +117,8 @@ struct ShotState {
     requested: bool,
     prepared: bool,
     started: Instant,
+    /// `--screenshot-live`: capture mid-scan instead of waiting for the end.
+    live: bool,
 }
 
 /// Command-line options of the GUI.
@@ -118,6 +126,8 @@ struct ShotState {
 pub struct RunOptions {
     pub start: Option<PathBuf>,
     pub screenshot: Option<PathBuf>,
+    /// With `screenshot`: capture about a second into the scan instead of after it.
+    pub live: bool,
     pub view: Option<ViewKind>,
     pub lang: Option<String>,
 }
@@ -142,6 +152,10 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--screenshot" => o.screenshot = Some(PathBuf::from(it.next().ok_or("--screenshot needs a file")?)),
+            "--screenshot-live" => {
+                o.screenshot = Some(PathBuf::from(it.next().ok_or("--screenshot-live needs a file")?));
+                o.live = true;
+            }
             "--view" => {
                 let v = it.next().ok_or("--view needs a name")?;
                 o.view = Some(parse_view(v).ok_or_else(|| format!("unknown view '{v}'"))?);
@@ -316,6 +330,10 @@ impl App {
             dup_min: "64KB".into(),
             drives,
             handle: None,
+            partial_seen: false,
+            scan_started: Instant::now(),
+            scan_root: PathBuf::new(),
+            scan_total: None,
             loaded: None,
             expanded: HashSet::new(),
             sorted: HashMap::new(),
@@ -341,6 +359,7 @@ impl App {
                 requested: false,
                 prepared: false,
                 started: Instant::now(),
+                live: opts.live,
             }),
         }
     }
@@ -353,25 +372,76 @@ impl App {
         self.status = format!("{} {} ...", tr("Scanning"), root.display());
         self.notice.clear();
         self.settings.last_path = root.to_string_lossy().into_owned();
+        self.partial_seen = false;
+        self.scan_started = Instant::now();
+        self.scan_total = scan::drive_used_bytes(&root);
+        self.scan_root = root.clone();
         self.handle = Some(scan::spawn_scan_opts(root, self.excludes.clone(), self.fast_ntfs));
     }
 
+    /// Move expansion / selection from the tree currently shown to `new` (ids are rebuilt by every
+    /// snapshot, so they are mapped by path).
+    fn carry_state(&mut self, new: &Tree) {
+        let Some(old) = self.loaded.as_ref().map(|l| &l.tree) else { return };
+        let map_one = |id: Option<NodeId>| id.filter(|&i| (i as usize) < old.nodes.len()).and_then(|i| new.resolve_path(&old.name_path(i)));
+        self.expanded = scan::model::remap_ids(old, new, &self.expanded);
+        self.expanded.insert(Tree::ROOT);
+        let (sel, props, vroot) = (map_one(self.selected), map_one(self.props), map_one(Some(self.view_root)));
+        self.selected = sel;
+        self.props = props;
+        self.view_root = vroot.unwrap_or(Tree::ROOT);
+    }
+
+    /// Show a live snapshot of the running scan in the normal views.
+    fn apply_partial(&mut self, tree: Tree) {
+        if self.partial_seen {
+            self.carry_state(&tree);
+        } else {
+            self.partial_seen = true;
+            self.expanded.clear();
+            self.expanded.insert(Tree::ROOT);
+            self.selected = None;
+            self.props = None;
+            self.view_root = Tree::ROOT;
+            self.dup_result = None;
+        }
+        self.invalidate();
+        self.loaded = Some(Loaded {
+            tree,
+            root: self.scan_root.clone(),
+            elapsed: self.scan_started.elapsed(),
+            error_list: Vec::new(),
+            cancelled: false,
+        });
+    }
+
     fn poll_scan(&mut self) {
+        let mut latest: Option<Tree> = None;
         while let Some(msg) = self.handle.as_ref().and_then(|h| h.rx.try_recv().ok()) {
             let res = match msg {
                 ScanMsg::Notice(m) => {
                     self.notice = m;
                     continue;
                 }
+                ScanMsg::Partial(t) => {
+                    latest = Some(t);
+                    continue;
+                }
                 ScanMsg::Done(res) => *res,
             };
             self.handle = None;
-            self.expanded.clear();
-            self.expanded.insert(Tree::ROOT);
+            latest = None;
+            if self.partial_seen {
+                self.carry_state(&res.tree);
+            } else {
+                self.expanded.clear();
+                self.expanded.insert(Tree::ROOT);
+                self.selected = None;
+                self.props = None;
+                self.view_root = Tree::ROOT;
+            }
+            self.partial_seen = false;
             self.invalidate();
-            self.selected = None;
-            self.props = None;
-            self.view_root = Tree::ROOT;
             self.dup_result = None;
             self.status = if res.cancelled { tr("Scan cancelled") } else { tr("Scan complete") };
             self.loaded = Some(Loaded {
@@ -381,6 +451,9 @@ impl App {
                 error_list: res.errors,
                 cancelled: res.cancelled,
             });
+        }
+        if let Some(t) = latest {
+            self.apply_partial(t);
         }
     }
 
@@ -700,7 +773,7 @@ impl App {
                 let b = h.progress.bytes.load(Ordering::Relaxed);
                 let cur = h.progress.current.lock().map(|c| c.clone()).unwrap_or_default();
                 cell(ui, pw(0, 210.0), |ui| {
-                    ui.spinner();
+                    scan_marker(ui, 12.0);
                     ui.add(egui::Label::new(tr("Scanning")).truncate());
                 });
                 cell(ui, pw(1, 120.0), |ui| {
@@ -711,6 +784,10 @@ impl App {
                 });
                 cell(ui, err_w, |ui| {
                     ui.add(egui::Label::new(format!("{d} {}", tr("Folders"))).truncate());
+                });
+                cell(ui, 130.0, |ui| {
+                    let frac = self.scan_total.filter(|&t| t > 0).map(|t| (b as f32 / t as f32).min(0.99));
+                    progress_bar(ui, frac);
                 });
                 ui.add(egui::Label::new(format!("{cur}{}", if self.notice.is_empty() { String::new() } else { format!(" | {}", self.notice) })).truncate());
             } else if let Some(l) = &self.loaded {
@@ -897,6 +974,10 @@ impl App {
                                     t = t.italics();
                                 }
                                 ui.add(egui::Label::new(t).truncate());
+                                if n.scanning {
+                                    scan_marker(ui, 10.0);
+                                    ui.label(RichText::new(format!("{}...", tr("Scanning"))).weak().small());
+                                }
                             }
                             SortCol::Size => {
                                 ui.label(format_bytes(n.size));
@@ -1306,16 +1387,19 @@ impl App {
 
     /// `--screenshot` mode: wait for the scan (and duplicates), settle a few frames, capture, quit.
     fn drive_shot(&mut self, ctx: &egui::Context) {
-        let ready = self.loaded.is_some() && self.handle.is_none() && (self.view != ViewKind::Duplicates || self.dup_result.is_some());
-        if self.shot.is_none() {
-            return;
-        }
+        let Some(live) = self.shot.as_ref().map(|s| s.live) else { return };
+        let ready = if live {
+            // About a second into the scan: whatever tree is on screen then is the evidence.
+            self.loaded.is_some() && self.shot.as_ref().is_some_and(|s| s.started.elapsed() > Duration::from_millis(1200))
+        } else {
+            self.loaded.is_some() && self.handle.is_none() && (self.view != ViewKind::Duplicates || self.dup_result.is_some())
+        };
         ctx.request_repaint();
         if self.shot.as_ref().is_some_and(|s| s.started.elapsed() > Duration::from_secs(120)) {
             eprintln!("screenshot: timed out waiting for the scan");
             std::process::exit(2);
         }
-        if self.loaded.is_some() && self.handle.is_none() && self.view == ViewKind::Duplicates && self.dup_result.is_none() && self.dup_run.is_none() {
+        if !live && self.loaded.is_some() && self.handle.is_none() && self.view == ViewKind::Duplicates && self.dup_result.is_none() && self.dup_run.is_none() {
             self.dup_min = "1".into();
             self.start_duplicates();
         }
@@ -1410,6 +1494,38 @@ impl App {
     }
 }
 
+/// Small rotating dot used for unfinished folders. Unlike `ui.spinner()` it does not request a
+/// repaint by itself: the app already repaints at ~10 fps while a scan runs.
+fn scan_marker(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+    let c = rect.center();
+    let r = size / 2.0 - 1.0;
+    let col = ui.visuals().text_color();
+    ui.painter().circle_stroke(c, r, egui::Stroke::new(1.0, col.gamma_multiply(0.3)));
+    let a = ui.input(|i| i.time) as f32 * 6.0;
+    ui.painter().circle_filled(c + egui::vec2(a.cos(), a.sin()) * r, 1.6, col);
+}
+
+/// Scan progress: a filled bar when a total is known, otherwise a bouncing segment.
+fn progress_bar(ui: &mut egui::Ui, frac: Option<f32>) {
+    let w = ui.available_width().clamp(40.0, 120.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 10.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    let fill = Color32::from_rgb(70, 140, 70);
+    let mut bar = rect;
+    match frac {
+        Some(f) => bar.set_width(rect.width() * f.clamp(0.0, 1.0)),
+        None => {
+            let t = (ui.input(|i| i.time) as f32 * 0.8).fract();
+            let pos = if t < 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 };
+            let seg = rect.width() * 0.3;
+            bar = egui::Rect::from_min_size(egui::pos2(rect.left() + (rect.width() - seg) * pos, rect.top()), egui::vec2(seg, rect.height()));
+        }
+    }
+    p.rect_filled(bar, 2.0, fill);
+}
+
 fn open_in_explorer(path: &std::path::Path) {
     #[cfg(windows)]
     {
@@ -1468,6 +1584,15 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_screenshot_flag_is_parsed() {
+        let a: Vec<String> = ["--screenshot-live", "l.png", "C:\\x"].iter().map(|s| s.to_string()).collect();
+        let o = parse_args(&a).unwrap();
+        assert_eq!(o.screenshot, Some(PathBuf::from("l.png")));
+        assert!(o.live);
+        assert!(parse_args(&["--screenshot-live".into()]).is_err());
+    }
 
     #[test]
     fn args_are_parsed() {

@@ -5,9 +5,10 @@ pub mod model;
 pub mod walker;
 
 pub use model::{format_bytes, format_time, set_units, NodeId, Tree, NONE};
-pub use walker::{scan_blocking, scan_simple, Progress, ScanError, ScanResult};
+#[allow(unused_imports)]
+pub use walker::{scan_blocking, scan_live, scan_simple, Progress, ScanError, ScanResult};
 
-use crossbeam_channel::{unbounded, Receiver};
+use crossbeam_channel::{bounded, Receiver};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,6 +16,9 @@ use std::sync::Arc;
 pub enum ScanMsg {
     /// Informational message for the status bar (for example the fast-scan fallback reason).
     Notice(String),
+    /// Live snapshot of the tree built so far (directories only, aggregated totals, unfinished
+    /// directories flagged `scanning`). Dropped when the UI is busy, so it never slows the scan.
+    Partial(Tree),
     Done(Box<ScanResult>),
 }
 
@@ -31,6 +35,27 @@ impl ScanHandle {
     }
 }
 
+/// Used bytes of the volume holding `root`, only when `root` is a drive root (for a progress estimate).
+#[cfg(windows)]
+pub fn drive_used_bytes(root: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let s = root.to_string_lossy();
+    let t = s.trim_end_matches(['\\', '/']);
+    if t.len() != 2 || !t.ends_with(':') {
+        return None;
+    }
+    let wide: Vec<u16> = root.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut _free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+    // SAFETY: `wide` is NUL-terminated; the three out pointers are valid for the call.
+    let ok = unsafe { windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(wide.as_ptr(), &mut _free, &mut total, &mut total_free) };
+    (ok != 0 && total >= total_free).then_some(total - total_free)
+}
+
+#[cfg(not(windows))]
+pub fn drive_used_bytes(_root: &std::path::Path) -> Option<u64> {
+    None
+}
+
 /// Start a scan on a background thread; the result arrives on `rx`.
 #[allow(dead_code)]
 pub fn spawn_scan(root: PathBuf, excludes: Vec<PathBuf>) -> ScanHandle {
@@ -41,7 +66,7 @@ pub fn spawn_scan(root: PathBuf, excludes: Vec<PathBuf>) -> ScanHandle {
 pub fn spawn_scan_opts(root: PathBuf, excludes: Vec<PathBuf>, fast: bool) -> ScanHandle {
     let progress = Arc::new(Progress::default());
     let cancel = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = unbounded();
+    let (tx, rx) = bounded(2);
     let (p, c) = (progress.clone(), cancel.clone());
     std::thread::spawn(move || {
         let mut fast_res = None;
@@ -53,7 +78,10 @@ pub fn spawn_scan_opts(root: PathBuf, excludes: Vec<PathBuf>, fast: bool) -> Sca
                 }
             }
         }
-        let res = fast_res.unwrap_or_else(|| scan_blocking(&root, &p, &c, &excludes));
+        let sink = |t: Tree| {
+            let _ = tx.try_send(ScanMsg::Partial(t));
+        };
+        let res = fast_res.unwrap_or_else(|| scan_live(&root, &p, &c, &excludes, Some(&sink)));
         let _ = tx.send(ScanMsg::Done(Box::new(res)));
     });
     ScanHandle { progress, cancel, rx }
@@ -158,8 +186,93 @@ mod tests {
         match h.rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap() {
             ScanMsg::Done(r) => assert_eq!(r.tree.root().unwrap().size, 7),
             ScanMsg::Notice(m) => panic!("unexpected notice: {m}"),
+            ScanMsg::Partial(_) => {
+                // Snapshots may precede the result; the result must still arrive.
+                loop {
+                    match h.rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap() {
+                        ScanMsg::Done(r) => {
+                            assert_eq!(r.tree.root().unwrap().size, 7);
+                            break;
+                        }
+                        ScanMsg::Partial(_) => {}
+                        ScanMsg::Notice(m) => panic!("unexpected notice: {m}"),
+                    }
+                }
+            }
         }
         assert_eq!(h.progress.files.load(Ordering::Relaxed), 1);
+    }
+
+    fn tree_of(depth: usize, fan: usize, files: usize) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        fn rec(p: &std::path::Path, depth: usize, fan: usize, files: usize) {
+            for f in 0..files {
+                write(&p.join(format!("f{f}.bin")), 100 + f);
+            }
+            if depth > 0 {
+                for i in 0..fan {
+                    rec(&p.join(format!("d{i}")), depth - 1, fan, files);
+                }
+            }
+        }
+        rec(d.path(), depth, fan, files);
+        d
+    }
+
+    #[test]
+    fn partial_snapshots_are_monotonic_and_final_matches() {
+        use std::sync::Mutex;
+        let d = tree_of(4, 4, 6); // 341 directories
+        let snaps: Mutex<Vec<Tree>> = Mutex::new(Vec::new());
+        let sink = |t: Tree| snaps.lock().unwrap().push(t);
+        let r = scan_live(d.path(), &Progress::default(), &AtomicBool::new(false), &[], Some(&sink));
+        let snaps = snaps.into_inner().unwrap();
+        assert!(!snaps.is_empty(), "at least the final snapshot is delivered");
+        let mut last = (0u64, 0u64, 0u64);
+        for t in &snaps {
+            let root = t.root().unwrap();
+            let cur = (root.size, root.files, root.dirs);
+            assert!(cur.0 >= last.0 && cur.1 >= last.1 && cur.2 >= last.2, "{cur:?} < {last:?}");
+            last = cur;
+            // totals are consistent: every directory equals its direct part plus its children
+            for (i, n) in t.nodes.iter().enumerate() {
+                assert!(n.is_dir);
+                let kids: u64 = n.children.iter().map(|&c| t.get(c).size).sum();
+                assert!(n.size >= kids, "node {i} smaller than its children");
+                for &c in &n.children {
+                    assert_eq!(t.get(c).parent as usize, i);
+                    assert!(c as usize > i);
+                }
+            }
+        }
+        let fin = snaps.last().unwrap();
+        let (a, b) = (fin.root().unwrap(), r.tree.root().unwrap());
+        assert_eq!((a.size, a.alloc, a.files, a.dirs), (b.size, b.alloc, b.files, b.dirs));
+        assert_eq!(fin.nodes.len(), r.tree.nodes.iter().filter(|n| n.is_dir).count());
+        assert!(fin.nodes.iter().all(|n| !n.scanning), "everything is done in the final snapshot");
+        assert!(r.tree.nodes.iter().all(|n| !n.scanning));
+        // the blocking scan agrees
+        let plain = scan_simple(d.path());
+        assert_eq!(plain.tree.root().unwrap().size, b.size);
+    }
+
+    #[test]
+    fn cancel_keeps_the_partial_tree() {
+        let d = tree_of(3, 4, 3);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = std::sync::atomic::AtomicUsize::new(0);
+        let c2 = cancel.clone();
+        // Cancel as soon as the first snapshot arrives.
+        let sink = |t: Tree| {
+            seen.fetch_add(t.nodes.len(), Ordering::Relaxed);
+            c2.store(true, Ordering::Relaxed);
+        };
+        let r = scan_live(d.path(), &Progress::default(), &cancel, &[], Some(&sink));
+        assert!(seen.load(Ordering::Relaxed) > 0);
+        // the result is a usable (possibly smaller) tree, never empty or panicking
+        assert!(r.tree.root().is_some());
+        let full = scan_simple(d.path());
+        assert!(r.tree.root().unwrap().size <= full.tree.root().unwrap().size);
     }
 
     #[test]

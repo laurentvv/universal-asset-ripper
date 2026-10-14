@@ -9,6 +9,7 @@ built on assets extracted by Universal Asset Ripper (main icon, chevron bitmaps)
 cargo run --release -- [PATH]          # GUI (PATH is scanned at startup)
 cargo run --release -- --cli PATH -d 3 # headless tree print
 cargo run --release -- --screenshot out.png --view treemap PATH   # developer screenshot
+cargo run --release -- --screenshot-live live.png PATH  # frame captured ~1 s into the scan
 cargo test
 ```
 
@@ -59,6 +60,7 @@ cargo test
   - The DFM has no column widths for the tree (columns are created in code in the original), so widths remain ours.
 - **Options dialog** (menu Options, `src/ui/app/dialogs.rs`): language, units (auto, bytes, KB, MB, GB), percent basis (size or allocated), light/dark theme, allocated column and detail columns, fast NTFS scan default, exclusions editor. Units apply to the tree, status bar, views and the CSV/HTML/JSON exports.
 - **Polish**: keyboard shortcuts (F5 refresh, Ctrl+C copy path, Delete exclude, Backspace up, Ctrl+F filters, plus the DFM shortcuts such as Alt+Up, Ctrl+1/2/3/5, Ctrl+N), window size and position remembered, release build without a console window (`windows_subsystem = "windows"`; `--cli` and `--help` re-attach to the parent console with `AttachConsole`).
+- **Live scan tree** (`src/scan/walker.rs`, `src/ui/app.rs`): directories are registered in a shared arena the moment they are discovered, and a helper thread publishes a consistent snapshot every ~200 ms (backing off to 4x the snapshot cost on huge trees) as `ScanMsg::Partial(Tree)` over a bounded channel with `try_send`, so a busy UI drops snapshots instead of slowing the scan. A snapshot holds directories only (file nodes arrive with the final result), totals aggregated up to the root, and unfinished folders flagged `scanning` (rotating marker plus "Scanning..." in the tree). The normal views render the latest snapshot; expansion, selection and the treemap root are mapped between snapshots by path (`remap_ids`), and the table re-sorts as sizes grow. The status bar shows live totals, a progress bar (used-space estimate for a drive root, bouncing bar for a folder) and the current folder; repaints stay at ~10 fps while scanning. Stop keeps what was walked as the (partial) result. Limits: the fast NTFS (MFT) scan has no snapshots (blank until done); file-based views (types, largest/oldest files) fill in only when the scan ends because snapshots carry no file nodes; a directory's own file totals appear once its entries have been read. Evidence: `docs/screenshots/live_scan.png` (`--screenshot-live`, `C:\Windows`, captured mid-scan).
 - **Developer screenshots**: `treesize-clone --screenshot out.png [--view tree|treemap|chart|types|largest|oldest|duplicates] [--lang CODE] [PATH]` scans PATH, renders, saves a PNG through `ViewportCommand::Screenshot` and exits (settings are neither read nor written, English unless `--lang`). Results are in `docs/screenshots/` (`tree.png`: repo root; `treemap.png`: `src/` of the repo; `tree_fr.png`: French catalogue).
 
 ## Derived from the extracted assets vs written from scratch
