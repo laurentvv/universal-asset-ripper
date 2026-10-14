@@ -46,3 +46,4 @@ Thumbs.db
 
 # Committed test fixtures
 !tests/fixtures/**
+coverage/
