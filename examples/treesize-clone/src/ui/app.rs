@@ -130,6 +130,8 @@ enum Action {
     CopyPath(NodeId),
     Properties(NodeId),
     Exclude(NodeId),
+    Delete(NodeId),
+    Rescan(NodeId),
 }
 
 struct Loaded {
@@ -202,6 +204,10 @@ pub struct App {
     rows_dirty: bool,
     selected: Option<NodeId>,
     props: Option<NodeId>,
+    confirm_delete: Option<NodeId>,
+    /// Background re-scan of one folder: its name path (stable across tree edits) and the scan.
+    sub_scan: Option<(Vec<String>, ScanHandle)>,
+    delete_error: Option<String>,
     show_errors: bool,
     chevrons: Option<Chevrons>,
     status: String,
@@ -471,6 +477,9 @@ impl App {
             rows_dirty: true,
             selected: None,
             props: None,
+            confirm_delete: None,
+            sub_scan: None,
+            delete_error: None,
             show_errors: false,
             status: tr("Ready"),
             menu_items,
@@ -523,6 +532,57 @@ impl App {
         });
         self.invalidate();
         self.handle = Some(scan::spawn_scan_opts(root, self.excludes.clone(), self.fast_ntfs));
+    }
+
+    /// Rescan one folder in the background and graft the result into the loaded tree.
+    fn start_sub_scan(&mut self, id: NodeId) {
+        let Some(l) = &self.loaded else { return };
+        if self.handle.is_some() || self.sub_scan.is_some() || !l.tree.get(id).is_dir {
+            return;
+        }
+        if id == Tree::ROOT {
+            self.path_text = l.root.to_string_lossy().into_owned();
+            self.start_scan();
+            return;
+        }
+        let names: Vec<String> = l.tree.name_path(id).into_iter().map(str::to_string).collect();
+        let path = l.tree.path_of(id);
+        self.status = format!("{} {} ...", tr("Scanning"), path.display());
+        self.sub_scan = Some((names, scan::spawn_scan_opts(path, self.excludes.clone(), false)));
+    }
+
+    fn poll_sub_scan(&mut self) {
+        let mut done = None;
+        if let Some((_, h)) = &self.sub_scan {
+            while let Ok(msg) = h.rx.try_recv() {
+                if let ScanMsg::Done(res) = msg {
+                    done = Some(*res);
+                }
+            }
+        }
+        let Some(res) = done else { return };
+        let Some((names, _)) = self.sub_scan.take() else { return };
+        self.status = if res.cancelled { tr("Scan cancelled") } else { tr("Scan complete") };
+        if res.cancelled {
+            return;
+        }
+        let Some(l) = &mut self.loaded else { return };
+        let to_ids = |t: &Tree, p: &[String]| t.resolve_path(&p.iter().map(String::as_str).collect::<Vec<_>>());
+        let to_names = |t: &Tree, id: NodeId| -> Vec<String> { t.name_path(id).into_iter().map(str::to_string).collect() };
+        let Some(old) = to_ids(&l.tree, &names) else { return };
+        let sel = self.selected.map(|s| to_names(&l.tree, s));
+        let vroot = to_names(&l.tree, self.view_root);
+        let exp: Vec<Vec<String>> = self.expanded.iter().filter(|&&e| (e as usize) < l.tree.nodes.len()).map(|&e| to_names(&l.tree, e)).collect();
+        if l.tree.graft(old, res.tree).is_none() {
+            return;
+        }
+        l.error_list.extend(res.errors);
+        self.selected = sel.and_then(|p| to_ids(&l.tree, &p));
+        self.view_root = to_ids(&l.tree, &vroot).unwrap_or(Tree::ROOT);
+        self.expanded = exp.iter().filter_map(|p| to_ids(&l.tree, p)).collect();
+        self.expanded.insert(Tree::ROOT);
+        self.props = None;
+        self.invalidate();
     }
 
     /// Move expansion / selection from the tree currently shown to `new` (ids are rebuilt by every
@@ -719,6 +779,8 @@ impl App {
                         open_in_explorer(&l.tree.path_of(id));
                     }
                 }
+                Action::Delete(id) => self.confirm_delete = Some(id),
+                Action::Rescan(id) => self.start_sub_scan(id),
                 Action::Exclude(id) => {
                     if let Some(l) = &mut self.loaded {
                         self.excludes.push(l.tree.path_of(id));
@@ -757,6 +819,11 @@ impl App {
         match cmd {
             Cmd::Stop => scanning,
             Cmd::Refresh | Cmd::ParentFolder | Cmd::ScanDir => !scanning,
+            Cmd::RescanSelected => {
+                let is_dir = |s: NodeId| self.loaded.as_ref().is_some_and(|l| l.tree.get(s).is_dir && !l.tree.get(s).is_link);
+                !scanning && self.sub_scan.is_none() && self.selected.is_some_and(is_dir)
+            }
+            Cmd::RestartAdmin => cfg!(windows) && !scan::mft::is_elevated(),
             Cmd::OpenLocation | Cmd::ExpandLevel(_) | Cmd::ExpandFull => loaded,
             Cmd::ExcludeSelected => self.selected.is_some_and(|s| s != Tree::ROOT) && loaded,
             _ => true,
@@ -824,6 +891,19 @@ impl App {
             Cmd::NewInstance => {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).spawn();
+                }
+            }
+            Cmd::RescanSelected => {
+                if let Some(id) = self.selected {
+                    self.apply(ctx, vec![Action::Rescan(id)]);
+                }
+            }
+            Cmd::RestartAdmin => {
+                let path = self.loaded.as_ref().map(|l| l.root.clone()).unwrap_or_else(|| PathBuf::from(self.path_text.trim()));
+                if restart_as_admin(&path) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    self.notice = tr("Administrator restart was cancelled or failed");
                 }
             }
             Cmd::Filter => self.show_filters = !self.show_filters,
@@ -1046,6 +1126,7 @@ impl App {
     }
 
     fn tree_table(&mut self, ui: &mut egui::Ui) {
+        let can_rescan = self.sub_scan.is_none() && self.handle.is_none();
         if self.loaded.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(tr("Pick a drive or type a path, then press Scan."));
@@ -1146,6 +1227,7 @@ impl App {
                         RowKind::Files(d) => (d, d),
                     };
                     let n = tree.get(id);
+                    let is_folder = n.is_dir && !n.is_link;
                     let metric = |x: &scan::model::Node| if by_alloc { x.alloc } else { x.size };
                     // Per-row values (a Files row aggregates the direct files of folder `id`).
                     let (name, size, alloc, files, dirs, modified, num, den, is_dir, is_link, scanning, can_open, open) = if pseudo {
@@ -1271,6 +1353,14 @@ impl App {
                         }
                         if !pseudo && id != Tree::ROOT && ui.button(tr("Exclude")).clicked() {
                             actions.push(Action::Exclude(id));
+                            ui.close();
+                        }
+                        if !pseudo && is_folder && can_rescan && ui.button(tr("Rescan Folder")).clicked() {
+                            actions.push(Action::Rescan(id));
+                            ui.close();
+                        }
+                        if !pseudo && id != Tree::ROOT && ui.button(tr("Delete (Recycle Bin)")).clicked() {
+                            actions.push(Action::Delete(id));
                             ui.close();
                         }
                     });
@@ -1697,8 +1787,65 @@ impl App {
         }
     }
 
+    fn delete_window(&mut self, ctx: &egui::Context) {
+        if self.confirm_delete.is_none() && self.delete_error.is_none() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
+                if let Some(id) = self.selected.filter(|&id| id != Tree::ROOT && self.handle.is_none()) {
+                    self.confirm_delete = Some(id);
+                }
+            }
+            return;
+        }
+        if let Some(err) = self.delete_error.clone() {
+            let mut open = true;
+            egui::Window::new(tr("Delete (Recycle Bin)")).open(&mut open).collapsible(false).show(ctx, |ui| {
+                ui.label(err);
+                if ui.button(tr("OK")).clicked() {
+                    self.delete_error = None;
+                }
+            });
+            if !open {
+                self.delete_error = None;
+            }
+            return;
+        }
+        let Some(id) = self.confirm_delete else { return };
+        let Some(l) = &self.loaded else {
+            self.confirm_delete = None;
+            return;
+        };
+        let path = l.tree.path_of(id);
+        let size = l.tree.get(id).size;
+        let (mut yes, mut no) = (false, false);
+        egui::Window::new(tr("Delete (Recycle Bin)")).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(path.to_string_lossy());
+            ui.label(format_bytes(size));
+            ui.horizontal(|ui| {
+                yes = ui.button(tr("Delete")).clicked();
+                no = ui.button(tr("Cancel")).clicked();
+            });
+        });
+        if no {
+            self.confirm_delete = None;
+        } else if yes {
+            self.confirm_delete = None;
+            match crate::trash::recycle(&path) {
+                Ok(()) => {
+                    if let Some(l) = &mut self.loaded {
+                        l.tree.remove_subtree(id);
+                    }
+                    self.selected = None;
+                    self.view_root = Tree::ROOT;
+                    self.invalidate();
+                }
+                Err(e) => self.delete_error = Some(format!("{}: {e}", path.display())),
+            }
+        }
+    }
+
     fn windows(&mut self, ctx: &egui::Context) {
         self.options_window(ctx);
+        self.delete_window(ctx);
         self.about_window(ctx);
         if let (Some(id), Some(l)) = (self.props, &self.loaded) {
             let mut open = true;
@@ -1776,6 +1923,28 @@ fn progress_bar(ui: &mut egui::Ui, frac: Option<f32>) {
     p.rect_filled(bar, 2.0, fill);
 }
 
+/// Relaunch this program elevated (UAC prompt) on `path`; `true` when the new process was started.
+fn restart_as_admin(path: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        let wide = |s: &std::ffi::OsStr| -> Vec<u16> { s.encode_wide().chain(std::iter::once(0)).collect() };
+        let Ok(exe) = std::env::current_exe() else { return false };
+        let verb = wide(std::ffi::OsStr::new("runas"));
+        let file = wide(exe.as_os_str());
+        let params = wide(std::ffi::OsStr::new(&format!("\"{}\"", path.display())));
+        // SAFETY: all strings are NUL-terminated and outlive the call; null window/directory are allowed.
+        let rc = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), params.as_ptr(), std::ptr::null(), 1) } as usize;
+        rc > 32
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 fn open_in_explorer(path: &std::path::Path) {
     #[cfg(windows)]
     {
@@ -1794,6 +1963,7 @@ impl eframe::App for App {
         self.take_screenshot_event(&ctx);
         self.apply_settings(&ctx);
         self.poll_scan();
+        self.poll_sub_scan();
         self.poll_duplicates();
         if self.handle.is_some() || self.dup_run.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));

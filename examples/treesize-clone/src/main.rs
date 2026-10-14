@@ -10,6 +10,7 @@ mod fmt;
 mod i18n;
 mod scan;
 mod settings;
+mod trash;
 mod ui;
 
 /// Re-attach stdout/stderr to the console of the parent process (needed with the GUI subsystem).

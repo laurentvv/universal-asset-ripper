@@ -201,6 +201,44 @@ impl Tree {
         }
     }
 
+    /// Replace directory `id` by a freshly scanned `sub` tree (rooted at the same folder) and add
+    /// its totals to all ancestors. Returns the new node id, `None` when `id` cannot be replaced.
+    pub fn graft(&mut self, id: NodeId, mut sub: Tree) -> Option<NodeId> {
+        if id == Self::ROOT || id as usize >= self.nodes.len() || sub.nodes.is_empty() || sub.live.is_some() {
+            return None;
+        }
+        let parent = self.get(id).parent;
+        if parent == NONE {
+            return None;
+        }
+        let name = self.get(id).name.clone();
+        self.remove_subtree(id);
+        let off = self.nodes.len() as NodeId;
+        for n in &mut sub.nodes {
+            if n.parent != NONE {
+                n.parent += off;
+            }
+            for c in &mut n.children {
+                *c += off;
+            }
+        }
+        sub.nodes[0].name = name;
+        sub.nodes[0].parent = parent;
+        let (size, alloc, files, dirs) = (sub.nodes[0].size, sub.nodes[0].alloc, sub.nodes[0].files, sub.nodes[0].dirs + 1);
+        self.nodes.extend(sub.nodes);
+        self.nodes[parent as usize].children.push(off);
+        let mut cur = parent;
+        while cur != NONE {
+            let a = &mut self.nodes[cur as usize];
+            a.size += size;
+            a.alloc += alloc;
+            a.files += files;
+            a.dirs += dirs;
+            cur = a.parent;
+        }
+        Some(off)
+    }
+
     #[allow(dead_code)]
     pub fn find_child(&self, parent: NodeId, name: &str) -> Option<NodeId> {
         self.get(parent)
@@ -254,6 +292,31 @@ pub fn format_time(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graft_matches_a_full_rescan() {
+        use crate::scan::scan_simple;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join("a/deep")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        std::fs::write(root.join("a/deep/x.bin"), vec![1u8; 1000]).unwrap();
+        std::fs::write(root.join("b/y.bin"), vec![1u8; 500]).unwrap();
+        let mut tree = scan_simple(root).tree;
+        // Change folder `a` on disk, then rescan only it and graft.
+        std::fs::write(root.join("a/new.bin"), vec![1u8; 4000]).unwrap();
+        std::fs::remove_file(root.join("a/deep/x.bin")).unwrap();
+        let a = tree.resolve_path(&["a"]).unwrap();
+        let sub = scan_simple(&root.join("a")).tree;
+        let new_a = tree.graft(a, sub).unwrap();
+        assert_eq!(tree.get(new_a).name, "a");
+        assert_eq!(tree.get(new_a).parent, Tree::ROOT);
+        let full = scan_simple(root).tree;
+        let (g, f) = (tree.get(Tree::ROOT), full.get(Tree::ROOT));
+        assert_eq!((g.size, g.alloc, g.files, g.dirs), (f.size, f.alloc, f.files, f.dirs));
+        assert_eq!(tree.resolve_path(&["a", "new.bin"]).map(|i| tree.get(i).size), Some(4000));
+        assert!(tree.graft(Tree::ROOT, Tree::default()).is_none());
+    }
 
     #[test]
     fn direct_files_from_nodes_and_placeholder() {

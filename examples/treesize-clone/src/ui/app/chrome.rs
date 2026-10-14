@@ -25,6 +25,8 @@ pub enum Cmd {
     ExcludeSelected,
     SetView(ViewKind),
     ToggleFast,
+    RescanSelected,
+    RestartAdmin,
 }
 
 /// Map a DFM menu/toolbar item to a command, `None` when the clone has no equivalent.
