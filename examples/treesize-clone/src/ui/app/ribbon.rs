@@ -158,9 +158,11 @@ impl App {
                         self.big(ui, &mut out, Cmd::ParentFolder, Icon::Up, "Parent Folder");
                         self.big(ui, &mut out, Cmd::OpenLocation, Icon::Open, "Open Location");
                         self.big(ui, &mut out, Cmd::ExcludeSelected, Icon::Exclude, "Exclude");
+                        self.big(ui, &mut out, Cmd::RescanSelected, Icon::Refresh, "Rescan Folder");
                     });
                     group(ui, &cap("GrpToolsTitleAction", "Tools"), |ui| {
                         self.big(ui, &mut out, Cmd::Filter, Icon::Filter, "Filter");
+                        self.big(ui, &mut out, Cmd::RestartAdmin, Icon::Bolt, "Restart as Administrator");
                         let resp = big_button(ui, Icon::Export, &tr("Export"), self.loaded.is_some() && !scanning, false);
                         egui::Popup::menu(&resp).show(|ui| {
                             for (label, fmt) in [("CSV...", export::Format::Csv), ("HTML report...", export::Format::Html), ("JSON...", export::Format::Json)] {
