@@ -7,6 +7,21 @@ description = "Fast multi-threaded TreeSize clone in Rust using extracted assets
 [dependencies]
 rayon = "1.10"
 colored = "2.1"
+eframe = "0.36.2"
+image = { version = "0.25.10", default-features = false, features = ["ico", "bmp", "png"] }
+crossbeam-channel = "0.5.17"
+egui_extras = "0.36.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+blake3 = "1.8.7"
+rfd = "0.17.2"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 
 [build-dependencies]
 winres = "0.1"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Globalization", "Win32_System_Console"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
