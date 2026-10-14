@@ -3,6 +3,7 @@
 use super::treemap::{hit_test, pie_angles, squarify, Rect as TRect};
 use crate::i18n::tr;
 use crate::analysis::types::{category_of_name, top_children, Category, TypeStat};
+use crate::scan::model::RankedFile;
 use crate::scan::{format_bytes, format_time, NodeId, Tree, NONE};
 use eframe::egui::{self, Color32, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -12,6 +13,33 @@ const MAX_TILES: usize = 4000;
 pub enum ListEvent {
     Select(NodeId),
     Open(NodeId),
+    OpenPath(String),
+}
+
+/// One line of the "largest" / "oldest" lists: a retained file node or a streamed live entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedRow {
+    pub path: String,
+    pub size: u64,
+    pub modified: i64,
+    pub id: Option<NodeId>,
+}
+
+pub fn rows_from_ids(tree: &Tree, ids: &[NodeId]) -> Vec<RankedRow> {
+    ids.iter()
+        .map(|&id| {
+            let n = tree.get(id);
+            RankedRow { path: tree.path_of(id).to_string_lossy().into_owned(), size: n.size, modified: n.modified, id: Some(id) }
+        })
+        .collect()
+}
+
+pub fn rows_from_live(tree: &Tree, files: &[RankedFile]) -> Vec<RankedRow> {
+    files
+        .iter()
+        .filter(|f| (f.dir as usize) < tree.nodes.len())
+        .map(|f| RankedRow { path: tree.path_of(f.dir).join(&f.name).to_string_lossy().into_owned(), size: f.size, modified: f.modified, id: None })
+        .collect()
 }
 
 pub fn category_color(c: Category) -> Color32 {
@@ -255,7 +283,7 @@ pub fn types_view(ui: &mut egui::Ui, stats: &[TypeStat]) {
 }
 
 /// Ranked file list (largest / oldest). Click selects, double-click opens in Explorer.
-pub fn file_list_view(ui: &mut egui::Ui, tree: &Tree, ids: &[NodeId], salt: &str, selected: Option<NodeId>) -> Option<ListEvent> {
+pub fn file_list_view(ui: &mut egui::Ui, rows: &[RankedRow], salt: &str, selected: Option<NodeId>) -> Option<ListEvent> {
     let mut ev = None;
     ui.push_id(salt, |ui| {
         TableBuilder::new(ui)
@@ -275,28 +303,32 @@ pub fn file_list_view(ui: &mut egui::Ui, tree: &Tree, ids: &[NodeId], salt: &str
                 }
             })
             .body(|body| {
-                body.rows(20.0, ids.len(), |mut row| {
+                body.rows(20.0, rows.len(), |mut row| {
                     let i = row.index();
-                    let id = ids[i];
-                    let n = tree.get(id);
-                    row.set_selected(selected == Some(id));
+                    let r = &rows[i];
+                    row.set_selected(r.id.is_some() && selected == r.id);
                     row.col(|ui| {
                         ui.label((i + 1).to_string());
                     });
                     row.col(|ui| {
-                        ui.add(egui::Label::new(tree.path_of(id).to_string_lossy()).truncate());
+                        ui.add(egui::Label::new(r.path.as_str()).truncate());
                     });
                     row.col(|ui| {
-                        ui.label(format_bytes(n.size));
+                        ui.label(format_bytes(r.size));
                     });
                     row.col(|ui| {
-                        ui.label(format_time(n.modified));
+                        ui.label(format_time(r.modified));
                     });
-                    let r = row.response();
-                    if r.double_clicked() {
-                        ev = Some(ListEvent::Open(id));
-                    } else if r.clicked() {
-                        ev = Some(ListEvent::Select(id));
+                    let resp = row.response();
+                    if resp.double_clicked() {
+                        ev = Some(match r.id {
+                            Some(id) => ListEvent::Open(id),
+                            None => ListEvent::OpenPath(r.path.clone()),
+                        });
+                    } else if resp.clicked() {
+                        if let Some(id) = r.id {
+                            ev = Some(ListEvent::Select(id));
+                        }
                     }
                 });
             });

@@ -2,6 +2,7 @@
 
 mod app;
 mod assets;
+mod paint;
 mod treemap;
 mod views;
 

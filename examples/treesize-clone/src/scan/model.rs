@@ -32,13 +32,99 @@ pub struct Node {
     pub scanning: bool,
 }
 
+/// Direct (non-recursive) files of one directory, shown as the "[N Files]" pseudo-row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirectFiles {
+    pub count: u64,
+    pub size: u64,
+    pub alloc: u64,
+    pub modified: i64,
+}
+
+/// A ranked file of a live snapshot (file nodes are not part of snapshots).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedFile {
+    /// Directory (node id of the same snapshot) holding the file.
+    pub dir: NodeId,
+    pub name: String,
+    pub size: u64,
+    pub modified: i64,
+}
+
+/// Per-extension aggregate of a live snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtAgg {
+    pub ext: String,
+    pub count: u64,
+    pub size: u64,
+    pub alloc: u64,
+}
+
+/// File-level data streamed with a partial snapshot: bounded in size whatever the file count
+/// (aggregates + top-N lists), so a snapshot never clones millions of nodes.
+#[derive(Debug, Clone, Default)]
+pub struct LiveStats {
+    /// Indexed by node id of the snapshot.
+    pub direct: Vec<DirectFiles>,
+    pub types: Vec<ExtAgg>,
+    pub largest: Vec<RankedFile>,
+    pub oldest: Vec<RankedFile>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Tree {
     pub nodes: Vec<Node>,
+    /// Present on live-scan snapshots only (the final tree retains its file nodes instead).
+    pub live: Option<Box<LiveStats>>,
 }
 
 impl Tree {
     pub const ROOT: NodeId = 0;
+
+    /// One-node tree shown from the very first frame of a scan (counters are patched in live).
+    pub fn placeholder(root_name: &str) -> Tree {
+        Tree {
+            nodes: vec![Node {
+                name: root_name.to_string(),
+                parent: NONE,
+                children: Vec::new(),
+                size: 0,
+                alloc: 0,
+                files: 0,
+                dirs: 0,
+                modified: 0,
+                attrs: 0,
+                is_dir: true,
+                is_link: false,
+                scanning: true,
+            }],
+            live: Some(Box::default()),
+        }
+    }
+
+    /// Files held directly by a directory: from the stream during a scan, from the retained file
+    /// nodes afterwards.
+    pub fn direct_files(&self, id: NodeId) -> DirectFiles {
+        if let Some(l) = &self.live {
+            return l.direct.get(id as usize).copied().unwrap_or_default();
+        }
+        let mut d = DirectFiles::default();
+        for &c in &self.get(id).children {
+            let n = self.get(c);
+            if !n.is_dir {
+                d.count += 1;
+                d.size += n.size;
+                d.alloc += n.alloc;
+                d.modified = d.modified.max(n.modified);
+            }
+        }
+        d
+    }
+
+    /// Individual file nodes can be listed (false for live snapshots).
+    pub fn has_file_nodes(&self) -> bool {
+        self.live.is_none()
+    }
 
     pub fn root(&self) -> Option<&Node> {
         self.nodes.first()
@@ -155,55 +241,14 @@ pub fn current_units() -> Units {
     Units::from_u8(CURRENT_UNITS.load(Ordering::Relaxed))
 }
 
-/// Format a size with the globally selected unit.
+/// Format a size with the globally selected unit and language.
 pub fn format_bytes(bytes: u64) -> String {
-    format_bytes_in(bytes, current_units())
+    crate::fmt::format_bytes_in(bytes, current_units(), crate::fmt::loc())
 }
 
-/// Format a size in an explicit unit (`Auto` picks the largest unit that keeps the value >= 1).
-pub fn format_bytes_in(bytes: u64, units: Units) -> String {
-    const NAMES: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let fixed = match units {
-        Units::Auto => None,
-        Units::Bytes => return format!("{bytes} B"),
-        Units::KB => Some(1),
-        Units::MB => Some(2),
-        Units::GB => Some(3),
-    };
-    match fixed {
-        Some(i) => format!("{:.2} {}", bytes as f64 / 1024f64.powi(i), NAMES[i as usize]),
-        None => {
-            if bytes < 1024 {
-                return format!("{bytes} B");
-            }
-            let mut v = bytes as f64;
-            let mut i = 0;
-            while v >= 1024.0 && i < NAMES.len() - 1 {
-                v /= 1024.0;
-                i += 1;
-            }
-            format!("{:.2} {}", v, NAMES[i])
-        }
-    }
-}
-
-/// Format Unix seconds as "YYYY-MM-DD HH:MM" in the machine's local time zone.
+/// Format Unix seconds as date and time in the machine's local time zone (language-aware).
 pub fn format_time(secs: i64) -> String {
-    if secs == 0 {
-        return String::new();
-    }
-    format_time_in(secs, &chrono::Local)
-}
-
-/// Same, in an explicit time zone (UTC in tests).
-pub fn format_time_in<Tz: chrono::TimeZone>(secs: i64, tz: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    match tz.timestamp_opt(secs, 0).single() {
-        Some(t) => t.format("%Y-%m-%d %H:%M").to_string(),
-        None => String::new(),
-    }
+    crate::fmt::format_datetime_in(secs, &chrono::Local, crate::fmt::loc())
 }
 
 #[cfg(test)]
@@ -211,27 +256,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn time_format() {
-        assert_eq!(format_time_in(86400 * 365, &chrono::Utc), "1971-01-01 00:00");
-        assert_eq!(format_time_in(1_700_000_000, &chrono::Utc), "2023-11-14 22:13");
-        assert_eq!(format_time(0), "");
-        // local rendering agrees with chrono's own local conversion
-        use chrono::TimeZone;
-        let want = chrono::Local.timestamp_opt(1_700_000_000, 0).unwrap().format("%Y-%m-%d %H:%M").to_string();
-        assert_eq!(format_time(1_700_000_000), want);
-    }
-
-    #[test]
-    fn bytes_format() {
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes_in(1536, Units::Auto), "1.50 KB");
-        assert_eq!(format_bytes_in(1536, Units::Bytes), "1536 B");
-        assert_eq!(format_bytes_in(1536, Units::KB), "1.50 KB");
-        assert_eq!(format_bytes_in(3 * 1024 * 1024, Units::KB), "3072.00 KB");
-        assert_eq!(format_bytes_in(1024 * 1024 * 1024, Units::MB), "1024.00 MB");
-        assert_eq!(format_bytes_in(1536 * 1024 * 1024, Units::GB), "1.50 GB");
-        assert_eq!(format_bytes_in(10, Units::MB), "0.00 MB");
+    fn direct_files_from_nodes_and_placeholder() {
+        let mut t = Tree::placeholder("R");
+        assert_eq!(t.direct_files(0), DirectFiles::default());
+        assert!(!t.has_file_nodes() && t.nodes[0].scanning);
+        let mut ls = LiveStats::default();
+        ls.direct.push(DirectFiles { count: 3, size: 30, alloc: 40, modified: 0 });
+        t.live = Some(Box::new(ls));
+        assert_eq!(t.direct_files(0).count, 3);
+        // final tree: derived from the retained file children (links to files count, dirs do not)
+        let file = |name: &str, parent, size, modified| Node { is_dir: false, size, alloc: size, modified, ..dir(name, parent, vec![]) };
+        let f = Tree { nodes: vec![dir("R", NONE, vec![1, 2, 3]), file("a", 0, 5, 7), file("b", 0, 6, 9), dir("d", 0, vec![])], ..Default::default() };
+        assert!(f.has_file_nodes());
+        assert_eq!(f.direct_files(0), DirectFiles { count: 2, size: 11, alloc: 11, modified: 9 });
     }
 
     fn dir(name: &str, parent: NodeId, children: Vec<NodeId>) -> Node {
@@ -254,17 +291,18 @@ mod tests {
     #[test]
     fn expanded_state_is_mapped_by_path_not_index() {
         // old: root -> [a -> [b], c]
-        let old = Tree { nodes: vec![dir("R", NONE, vec![1, 3]), dir("a", 0, vec![2]), dir("b", 1, vec![]), dir("c", 0, vec![])] };
+        let old = Tree { nodes: vec![dir("R", NONE, vec![1, 3]), dir("a", 0, vec![2]), dir("b", 1, vec![]), dir("c", 0, vec![])], ..Default::default() };
         // new snapshot rebuilt in another order, with an extra directory: root -> [z, c, a -> [b]]
         let new = Tree {
             nodes: vec![dir("R", NONE, vec![1, 2, 3]), dir("z", 0, vec![]), dir("c", 0, vec![]), dir("a", 0, vec![4]), dir("b", 3, vec![])],
+            ..Default::default()
         };
         let expanded: HashSet<NodeId> = [0, 1, 2].into_iter().collect(); // R, a, b
         let mapped = remap_ids(&old, &new, &expanded);
         let want: HashSet<NodeId> = [0, 3, 4].into_iter().collect();
         assert_eq!(mapped, want);
         // a vanished directory is dropped instead of aliasing another node
-        let gone = Tree { nodes: vec![dir("R", NONE, vec![1]), dir("c", 0, vec![])] };
+        let gone = Tree { nodes: vec![dir("R", NONE, vec![1]), dir("c", 0, vec![])], ..Default::default() };
         let mapped = remap_ids(&old, &gone, &expanded);
         assert_eq!(mapped, [0].into_iter().collect());
         assert_eq!(old.name_path(2), vec!["a", "b"]);
