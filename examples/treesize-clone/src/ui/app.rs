@@ -132,6 +132,23 @@ enum Action {
     Exclude(NodeId),
     Delete(NodeId),
     Rescan(NodeId),
+    Open(NodeId),
+    Terminal(NodeId),
+    ExpandBranch(NodeId),
+    CollapseBranch(NodeId),
+    CountSubfolders(NodeId),
+    Rename(NodeId),
+    NewFolder(NodeId),
+    ShellProps(NodeId),
+    CopyPathQuoted(NodeId),
+}
+
+/// Text prompt for Rename / New folder.
+struct NameDialog {
+    id: NodeId,
+    new_folder: bool,
+    text: String,
+    err: String,
 }
 
 struct Loaded {
@@ -205,6 +222,7 @@ pub struct App {
     selected: Option<NodeId>,
     props: Option<NodeId>,
     confirm_delete: Option<NodeId>,
+    name_dialog: Option<NameDialog>,
     /// Background re-scan of one folder: its name path (stable across tree edits) and the scan.
     sub_scan: Option<(Vec<String>, ScanHandle)>,
     delete_error: Option<String>,
@@ -478,6 +496,7 @@ impl App {
             selected: None,
             props: None,
             confirm_delete: None,
+            name_dialog: None,
             sub_scan: None,
             delete_error: None,
             show_errors: false,
@@ -781,6 +800,58 @@ impl App {
                 }
                 Action::Delete(id) => self.confirm_delete = Some(id),
                 Action::Rescan(id) => self.start_sub_scan(id),
+                Action::Open(id) => {
+                    if let Some(l) = &self.loaded {
+                        crate::shell::open(&l.tree.path_of(id));
+                    }
+                }
+                Action::Terminal(id) => {
+                    if let Some(l) = &self.loaded {
+                        let p = l.tree.path_of(id);
+                        crate::shell::open_terminal(if l.tree.get(id).is_dir { &p } else { p.parent().unwrap_or(&p) });
+                    }
+                }
+                Action::ShellProps(id) => {
+                    if let Some(l) = &self.loaded {
+                        crate::shell::properties(&l.tree.path_of(id));
+                    }
+                }
+                Action::CopyPathQuoted(id) => {
+                    if let Some(l) = &self.loaded {
+                        ctx.copy_text(format!("\"{}\"", l.tree.path_of(id).display()));
+                    }
+                }
+                Action::ExpandBranch(id) | Action::CollapseBranch(id) => {
+                    if let Some(l) = &self.loaded {
+                        let expand = matches!(a, Action::ExpandBranch(_));
+                        let mut stack = vec![id];
+                        while let Some(cur) = stack.pop() {
+                            let n = l.tree.get(cur);
+                            if !n.is_dir {
+                                continue;
+                            }
+                            if expand && !n.children.is_empty() {
+                                self.expanded.insert(cur);
+                            } else if !expand && cur != Tree::ROOT {
+                                self.expanded.remove(&cur);
+                            }
+                            stack.extend(n.children.iter().copied());
+                        }
+                        self.rows_dirty = true;
+                    }
+                }
+                Action::CountSubfolders(id) => {
+                    if let Some(l) = &self.loaded {
+                        let n = l.tree.get(id);
+                        self.notice = format!("{}: {} {}, {} {}", n.name, fmt::group_int(n.dirs), tr("Folders"), fmt::group_int(n.files), tr("Files"));
+                    }
+                }
+                Action::Rename(id) => {
+                    if let Some(l) = &self.loaded {
+                        self.name_dialog = Some(NameDialog { id, new_folder: false, text: l.tree.get(id).name.clone(), err: String::new() });
+                    }
+                }
+                Action::NewFolder(id) => self.name_dialog = Some(NameDialog { id, new_folder: true, text: String::new(), err: String::new() }),
                 Action::Exclude(id) => {
                     if let Some(l) = &mut self.loaded {
                         self.excludes.push(l.tree.path_of(id));
@@ -824,6 +895,7 @@ impl App {
                 !scanning && self.sub_scan.is_none() && self.selected.is_some_and(is_dir)
             }
             Cmd::RestartAdmin => cfg!(windows) && !scan::mft::is_elevated(),
+            Cmd::NewFolder => loaded && !scanning && self.sub_scan.is_none(),
             Cmd::OpenLocation | Cmd::ExpandLevel(_) | Cmd::ExpandFull => loaded,
             Cmd::ExcludeSelected => self.selected.is_some_and(|s| s != Tree::ROOT) && loaded,
             _ => true,
@@ -892,6 +964,10 @@ impl App {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).spawn();
                 }
+            }
+            Cmd::NewFolder => {
+                let target = self.selected.filter(|&s| self.loaded.as_ref().is_some_and(|l| l.tree.get(s).is_dir)).unwrap_or(Tree::ROOT);
+                self.apply(ctx, vec![Action::NewFolder(target)]);
             }
             Cmd::RescanSelected => {
                 if let Some(id) = self.selected {
@@ -1339,30 +1415,45 @@ impl App {
                         actions.push(Action::ToggleFiles(dir_for_files));
                     }
                     resp.context_menu(|ui| {
-                        if ui.button(tr("Open in Explorer")).clicked() {
-                            actions.push(Action::OpenExplorer(id));
-                            ui.close();
+                        let mut item = |ui: &mut egui::Ui, label: &str, act: Action| {
+                            if ui.button(tr(label)).clicked() {
+                                actions.push(act);
+                                ui.close();
+                            }
+                        };
+                        if pseudo {
+                            item(ui, "Open in Explorer", Action::OpenExplorer(id));
+                            return;
                         }
-                        if !pseudo && ui.button(tr("Copy path")).clicked() {
-                            actions.push(Action::CopyPath(id));
-                            ui.close();
+                        let not_root = id != Tree::ROOT;
+                        item(ui, "Open", Action::Open(id));
+                        item(ui, "Open in Explorer", Action::OpenExplorer(id));
+                        item(ui, "Open in Terminal", Action::Terminal(id));
+                        ui.separator();
+                        if is_folder {
+                            ui.menu_button(tr("Expand"), |ui| {
+                                item(ui, "Expand this branch", Action::ExpandBranch(id));
+                                item(ui, "Collapse this branch", Action::CollapseBranch(id));
+                            });
+                            if can_rescan {
+                                item(ui, "Rescan Folder", Action::Rescan(id));
+                            }
+                            item(ui, "Count of sub-folders", Action::CountSubfolders(id));
+                            item(ui, "New folder", Action::NewFolder(id));
                         }
-                        if !pseudo && ui.button(tr("Properties")).clicked() {
-                            actions.push(Action::Properties(id));
-                            ui.close();
+                        if not_root {
+                            item(ui, "Exclude", Action::Exclude(id));
                         }
-                        if !pseudo && id != Tree::ROOT && ui.button(tr("Exclude")).clicked() {
-                            actions.push(Action::Exclude(id));
-                            ui.close();
+                        ui.separator();
+                        item(ui, "Copy path", Action::CopyPath(id));
+                        item(ui, "Copy as path", Action::CopyPathQuoted(id));
+                        if not_root {
+                            item(ui, "Rename", Action::Rename(id));
+                            item(ui, "Delete (Recycle Bin)", Action::Delete(id));
                         }
-                        if !pseudo && is_folder && can_rescan && ui.button(tr("Rescan Folder")).clicked() {
-                            actions.push(Action::Rescan(id));
-                            ui.close();
-                        }
-                        if !pseudo && id != Tree::ROOT && ui.button(tr("Delete (Recycle Bin)")).clicked() {
-                            actions.push(Action::Delete(id));
-                            ui.close();
-                        }
+                        ui.separator();
+                        item(ui, "Properties", Action::Properties(id));
+                        item(ui, "Windows properties", Action::ShellProps(id));
                     });
                 });
             });
@@ -1787,6 +1878,68 @@ impl App {
         }
     }
 
+    /// Rename / New folder prompt.
+    fn name_window(&mut self, ctx: &egui::Context) {
+        let Some(mut d) = self.name_dialog.take() else { return };
+        let Some(l) = &self.loaded else { return };
+        let path = l.tree.path_of(d.id);
+        let title = tr(if d.new_folder { "New folder" } else { "Rename" });
+        let (mut ok, mut cancel) = (false, false);
+        egui::Window::new(title).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(path.to_string_lossy());
+            let r = ui.text_edit_singleline(&mut d.text);
+            r.request_focus();
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                ok = true;
+            }
+            if !d.err.is_empty() {
+                ui.colored_label(Color32::LIGHT_RED, &d.err);
+            }
+            ui.horizontal(|ui| {
+                ok |= ui.button(tr("OK")).clicked();
+                cancel = ui.button(tr("Cancel")).clicked();
+            });
+        });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+        if cancel {
+            return;
+        }
+        if !ok {
+            self.name_dialog = Some(d);
+            return;
+        }
+        let name = d.text.trim().to_string();
+        if !valid_file_name(&name) {
+            d.err = tr("Invalid name");
+            self.name_dialog = Some(d);
+            return;
+        }
+        if d.new_folder {
+            match std::fs::create_dir(path.join(&name)) {
+                Ok(()) => self.start_sub_scan(d.id),
+                Err(e) => {
+                    d.err = e.to_string();
+                    self.name_dialog = Some(d);
+                }
+            }
+        } else {
+            match std::fs::rename(&path, path.with_file_name(&name)) {
+                Ok(()) => {
+                    if let Some(l) = &mut self.loaded {
+                        l.tree.nodes[d.id as usize].name = name;
+                    }
+                    self.invalidate();
+                }
+                Err(e) => {
+                    d.err = e.to_string();
+                    self.name_dialog = Some(d);
+                }
+            }
+        }
+    }
+
     fn delete_window(&mut self, ctx: &egui::Context) {
         if self.confirm_delete.is_none() && self.delete_error.is_none() {
             if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
@@ -1846,6 +1999,7 @@ impl App {
     fn windows(&mut self, ctx: &egui::Context) {
         self.options_window(ctx);
         self.delete_window(ctx);
+        self.name_window(ctx);
         self.about_window(ctx);
         if let (Some(id), Some(l)) = (self.props, &self.loaded) {
             let mut open = true;
@@ -1921,6 +2075,11 @@ fn progress_bar(ui: &mut egui::Ui, frac: Option<f32>) {
         }
     }
     p.rect_filled(bar, 2.0, fill);
+}
+
+/// A single path component that Windows accepts (no separators or reserved characters).
+fn valid_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
 }
 
 /// Relaunch this program elevated (UAC prompt) on `path`; `true` when the new process was started.
@@ -2040,6 +2199,14 @@ mod tests {
         // A minimised window reports -32000: keep the size, drop the position.
         let off = sanitize_geom(WindowGeom { x: Some(-32000.0), ..g }, min).unwrap();
         assert_eq!((off.x, off.y, off.w), (None, None, 900.0));
+    }
+
+    #[test]
+    fn file_names_are_validated() {
+        assert!(valid_file_name("new folder") && valid_file_name("a.b"));
+        for bad in ["", ".", "..", "a/b", "a\\b", "x:y", "q?", "a|b"] {
+            assert!(!valid_file_name(bad), "{bad}");
+        }
     }
 
     #[test]

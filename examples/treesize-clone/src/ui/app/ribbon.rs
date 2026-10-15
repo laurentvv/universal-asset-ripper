@@ -159,6 +159,20 @@ impl App {
                         self.big(ui, &mut out, Cmd::OpenLocation, Icon::Open, "Open Location");
                         self.big(ui, &mut out, Cmd::ExcludeSelected, Icon::Exclude, "Exclude");
                         self.big(ui, &mut out, Cmd::RescanSelected, Icon::Refresh, "Rescan Folder");
+                        let resp = big_button(ui, Icon::Expand, &tr("Expand"), self.loaded.is_some(), false);
+                        egui::Popup::menu(&resp).show(|ui| {
+                            for n in 1..=3u8 {
+                                if ui.button(format!("{} {n}", tr("Level"))).clicked() {
+                                    out = Some(Cmd::ExpandLevel(n));
+                                    ui.close();
+                                }
+                            }
+                            if ui.button(tr("Expand all")).clicked() {
+                                out = Some(Cmd::ExpandFull);
+                                ui.close();
+                            }
+                        });
+                        self.big(ui, &mut out, Cmd::NewFolder, Icon::Folder, "New folder");
                     });
                     group(ui, &cap("GrpToolsTitleAction", "Tools"), |ui| {
                         self.big(ui, &mut out, Cmd::Filter, Icon::Filter, "Filter");

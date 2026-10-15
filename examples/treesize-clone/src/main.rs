@@ -10,6 +10,7 @@ mod fmt;
 mod i18n;
 mod scan;
 mod settings;
+mod shell;
 mod trash;
 mod ui;
 
