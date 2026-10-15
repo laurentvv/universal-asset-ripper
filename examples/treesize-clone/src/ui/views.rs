@@ -10,7 +10,38 @@ use egui_extras::{Column, TableBuilder};
 
 const MAX_TILES: usize = 4000;
 
+/// Entries of the right-click menu of list rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAct {
+    OpenItem,
+    Explorer,
+    CopyPath,
+    Properties,
+    Delete,
+}
+
+/// Right-click menu shared by the ranked lists and the clean-up list.
+pub fn row_menu(resp: &egui::Response, id: NodeId) -> Option<ListEvent> {
+    let mut out = None;
+    resp.context_menu(|ui| {
+        for (label, act) in [
+            ("Open", MenuAct::OpenItem),
+            ("Open in Explorer", MenuAct::Explorer),
+            ("Copy path", MenuAct::CopyPath),
+            ("Windows properties", MenuAct::Properties),
+            ("Delete (Recycle Bin)", MenuAct::Delete),
+        ] {
+            if ui.button(tr(label)).clicked() {
+                out = Some(ListEvent::Menu(id, act));
+                ui.close();
+            }
+        }
+    });
+    out
+}
+
 pub enum ListEvent {
+    Menu(NodeId, MenuAct),
     Select(NodeId),
     Open(NodeId),
     OpenPath(String),
@@ -94,7 +125,7 @@ pub fn breadcrumb(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId) {
 /// Level colours of the nested treemap (level 0 darkest), close to the original "Carte proportionnelle".
 const LEVELS: [Color32; 4] = [Color32::from_rgb(18, 38, 88), Color32::from_rgb(32, 62, 128), Color32::from_rgb(52, 92, 164), Color32::from_rgb(78, 122, 192)];
 
-pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected: &mut Option<NodeId>) {
+pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected: &mut Option<NodeId>) -> Option<ListEvent> {
     use super::treemap::{nested, tile_at, HEADER_H};
     breadcrumb(ui, tree, root);
     let legend_h = 24.0;
@@ -106,6 +137,7 @@ pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected:
     if tiles.is_empty() {
         painter.text(area.center(), egui::Align2::CENTER_CENTER, tr("Nothing to show"), egui::FontId::proportional(14.0), ui.visuals().text_color());
     }
+    let menu_key = egui::Id::new("treemap_menu_node");
     let hit = resp.hover_pos().and_then(|p| tile_at(&tiles, p.x - area.min.x, p.y - area.min.y));
     let to_rect = |r: TRect| egui::Rect::from_min_size(area.min + egui::vec2(r.x, r.y), egui::vec2(r.w, r.h));
     let font = egui::FontId::proportional(11.0);
@@ -134,6 +166,24 @@ pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected:
             }
         }
     }
+    if resp.secondary_clicked() {
+        // A "[N Files]" block stands for the files of its folder: it has no menu of its own
+        // (offering Delete there would target the whole folder).
+        match hit.filter(|&i| !tiles[i].files_of) {
+            Some(i) => {
+                let node = tiles[i].id;
+                ui.memory_mut(|m| m.data.insert_temp(menu_key, node));
+                *selected = Some(node);
+            }
+            None => ui.memory_mut(|m| m.data.remove::<NodeId>(menu_key)),
+        }
+    }
+    let mut event = None;
+    if let Some(node) = ui.memory(|m| m.data.get_temp::<NodeId>(menu_key)) {
+        if (node as usize) < tree.nodes.len() {
+            event = row_menu(&resp, node);
+        }
+    }
     if let Some(i) = hit {
         let t = tiles[i];
         let n = tree.get(t.id);
@@ -154,6 +204,7 @@ pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected:
         lp.rect_filled(r, 0.0, *c);
         lp.text(r.left_center() + egui::vec2(6.0, 0.0), egui::Align2::LEFT_CENTER, format!("{} {}", tr("Level"), i), font.clone(), Color32::WHITE);
     }
+    event
 }
 
 pub fn chart_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId) {
@@ -309,6 +360,11 @@ pub fn file_list_view(ui: &mut egui::Ui, rows: &[RankedRow], salt: &str, selecte
                         ui.label(format_time(r.modified));
                     });
                     let resp = row.response();
+                    if let Some(id) = r.id {
+                        if let Some(m) = row_menu(&resp, id) {
+                            ev = Some(m);
+                        }
+                    }
                     if resp.double_clicked() {
                         ev = Some(match r.id {
                             Some(id) => ListEvent::Open(id),
@@ -441,6 +497,9 @@ pub fn cleanup_list(ui: &mut egui::Ui, rows: &[CleanRow], selected: Option<NodeI
                         ui.label(format_bytes(r.size));
                     });
                     let resp = row.response();
+                    if let Some(m) = row_menu(&resp, r.id) {
+                        ev = Some(m);
+                    }
                     if resp.double_clicked() {
                         ev = Some(ListEvent::Open(r.id));
                     } else if resp.clicked() {
