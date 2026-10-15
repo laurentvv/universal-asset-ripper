@@ -80,6 +80,7 @@ impl App {
                 ui.vertical(|ui| {
                     ui.checkbox(&mut self.settings.show_allocated, tr("Allocated"));
                     ui.checkbox(&mut self.settings.details, tr("Show Details"));
+                    ui.checkbox(&mut self.settings.show_map, tr("Proportional map"));
                 });
                 ui.end_row();
 
