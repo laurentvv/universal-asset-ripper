@@ -1067,6 +1067,9 @@ impl App {
     }
 
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
+        if !actions.is_empty() {
+            ctx.request_repaint(); // the state changes after the frame was drawn
+        }
         for a in actions {
             match a {
                 Action::ToggleFiles(id) => {
@@ -1671,6 +1674,8 @@ impl App {
             });
         };
 
+        // Selectable labels (Files / Folders / Modified cells) would swallow clicks and right-clicks on the row.
+        ui.style_mut().interaction.selectable_labels = false;
         let mut table = TableBuilder::new(ui)
             .striped(!dark)
             .resizable(true)
@@ -1814,6 +1819,10 @@ impl App {
                         });
                     }
                     let resp = trow.response();
+                    // Like Explorer: a right-click selects the row under the cursor first (unless it is part of a multi-selection).
+                    if resp.secondary_clicked() && !pseudo && !(multi.len() > 1 && multi.contains(&id)) {
+                        actions.push(Action::Select(id));
+                    }
                     if resp.clicked() && !pseudo {
                         let mods = resp.ctx.input(|i| i.modifiers);
                         actions.push(if mods.command { Action::ToggleMulti(id) } else if mods.shift { Action::RangeMulti(id) } else { Action::Select(id) });
