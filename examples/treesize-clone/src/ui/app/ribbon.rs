@@ -198,6 +198,8 @@ impl App {
                             (ViewKind::Largest, Icon::Top, "Top 100 files"),
                             (ViewKind::Oldest, Icon::Oldest, "Oldest files"),
                             (ViewKind::Duplicates, Icon::Dupes, "Duplicates"),
+                            (ViewKind::Cleanup, Icon::Exclude, "Clean-up"),
+                            (ViewKind::Age, Icon::Oldest, "File age"),
                         ] {
                             self.big(ui, &mut out, Cmd::SetView(v), ic, l);
                         }
