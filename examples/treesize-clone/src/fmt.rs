@@ -79,7 +79,23 @@ fn unit_names(l: Loc) -> [&'static str; 5] {
 }
 
 /// Format a size (`Auto` picks the largest unit that keeps the value >= 1), one decimal like TreeSize.
+static DECIMALS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+/// Decimals used for sizes (clamped to 0..=3).
+pub fn set_decimals(n: u8) {
+    DECIMALS.store(n.min(3), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn decimals() -> usize {
+    DECIMALS.load(std::sync::atomic::Ordering::Relaxed) as usize
+}
+
 pub fn format_bytes_in(bytes: u64, units: Units, l: Loc) -> String {
+    format_bytes_dec(bytes, units, l, decimals())
+}
+
+/// `format_bytes_in` with an explicit number of decimals.
+pub fn format_bytes_dec(bytes: u64, units: Units, l: Loc, dec: usize) -> String {
     let names = unit_names(l);
     let fixed = match units {
         Units::Auto => None,
@@ -87,9 +103,10 @@ pub fn format_bytes_in(bytes: u64, units: Units, l: Loc) -> String {
         Units::KB => Some(1),
         Units::MB => Some(2),
         Units::GB => Some(3),
+        Units::TB => Some(4),
     };
     match fixed {
-        Some(i) => format!("{} {}", decimal_in(bytes as f64 / 1024f64.powi(i), 1, l), names[i as usize]),
+        Some(i) => format!("{} {}", decimal_in(bytes as f64 / 1024f64.powi(i), dec, l), names[i as usize]),
         None => {
             if bytes < 1024 {
                 return format!("{} {}", group_int_in(bytes, l), names[0]);
@@ -100,7 +117,7 @@ pub fn format_bytes_in(bytes: u64, units: Units, l: Loc) -> String {
                 v /= 1024.0;
                 i += 1;
             }
-            format!("{} {}", decimal_in(v, 1, l), names[i])
+            format!("{} {}", decimal_in(v, dec, l), names[i])
         }
     }
 }
@@ -223,6 +240,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terabyte_unit_and_configurable_decimals() {
+        let tb = 3 * 1024u64.pow(4) + 512 * 1024u64.pow(3);
+        assert_eq!(format_bytes_dec(tb, Units::TB, Loc::En, 1), "3.5 TB");
+        assert_eq!(format_bytes_dec(tb, Units::TB, Loc::Fr, 2), "3,50 To");
+        assert_eq!(format_bytes_dec(tb, Units::GB, Loc::En, 0), "3,584 GB");
+        assert_eq!(format_bytes_dec(1536, Units::Auto, Loc::En, 3), "1.500 KB");
+        assert_eq!(format_bytes_dec(1536, Units::KB, Loc::En, 0), "2 KB");
+        assert_eq!(format_bytes_dec(900, Units::Auto, Loc::En, 3), "900 Bytes");
+    }
 
     #[test]
     fn grouping_and_decimals() {

@@ -27,6 +27,11 @@ pub enum Cmd {
     ToggleFast,
     RescanSelected,
     ToggleMap,
+    ToggleHideEmpty,
+    ClearFilter,
+    Find,
+    /// Dock the proportional map on the right (true) or under the tree (false).
+    MapRight(bool),
     SnapshotSave,
     SnapshotCompare,
     NewFolder,

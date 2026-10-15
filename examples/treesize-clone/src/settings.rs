@@ -39,10 +39,11 @@ pub enum Units {
     KB,
     MB,
     GB,
+    TB,
 }
 
 impl Units {
-    pub const ALL: [Units; 5] = [Units::Auto, Units::Bytes, Units::KB, Units::MB, Units::GB];
+    pub const ALL: [Units; 6] = [Units::Auto, Units::Bytes, Units::KB, Units::MB, Units::GB, Units::TB];
 
     pub fn to_u8(self) -> u8 {
         self as u8
@@ -123,10 +124,26 @@ pub struct Settings {
     pub show_allocated: bool,
     /// Show the Files / Folders / Last Modified columns.
     pub details: bool,
+    /// Columns the user switched off in "Configure columns" (Name is always shown).
+    pub hidden_cols: Vec<SortKey>,
+    /// Decimals shown for sizes (0..=3).
+    pub decimals: u8,
+    /// Hide folders that hold nothing at all.
+    pub hide_empty: bool,
     /// Proportional map docked under the tree (like the original).
     pub show_map: bool,
     /// Height of the docked map panel in points (0 = automatic).
     pub map_height: f32,
+    /// Map docked on the right instead of under the tree.
+    pub map_right: bool,
+    /// Folder levels drawn below the shown folder (1..=4).
+    pub map_levels: u8,
+    pub map_unique_files: bool,
+    pub map_headers: bool,
+    pub map_legend: bool,
+    pub map_labels: bool,
+    /// Add the free space of the drive as a tile (when the map shows a drive root).
+    pub map_free: bool,
     pub size_mode: SizeMode,
     pub theme: Theme,
     pub window: Option<WindowGeom>,
@@ -149,8 +166,18 @@ impl Default for Settings {
             units: Units::Auto,
             show_allocated: true,
             details: true,
+            hidden_cols: Vec::new(),
+            decimals: 1,
+            hide_empty: false,
             show_map: true,
             map_height: 0.0,
+            map_right: false,
+            map_levels: 4,
+            map_unique_files: false,
+            map_headers: true,
+            map_legend: true,
+            map_labels: true,
+            map_free: false,
             size_mode: SizeMode::Size,
             theme: Theme::Auto,
             window: None,
@@ -222,8 +249,18 @@ mod tests {
             units: Units::MB,
             show_allocated: false,
             details: false,
+            hidden_cols: vec![SortKey::Folders],
+            decimals: 2,
+            hide_empty: true,
             show_map: false,
             map_height: 0.0,
+            map_right: true,
+            map_levels: 2,
+            map_unique_files: true,
+            map_headers: false,
+            map_legend: false,
+            map_labels: false,
+            map_free: true,
             size_mode: SizeMode::Allocated,
             theme: Theme::Dark,
             window: Some(WindowGeom { w: 900.0, h: 600.0, x: Some(10.0), y: None }),

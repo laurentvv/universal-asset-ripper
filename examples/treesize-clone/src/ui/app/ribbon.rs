@@ -160,7 +160,7 @@ impl App {
                     group(ui, &cap("GrpUnitTitleAction", "Unit"), |ui| {
                         self.big(ui, &mut out, Cmd::SetUnits(Units::Auto), Icon::Units, "Automatic Units");
                         ui.vertical(|ui| {
-                            for (u, l) in [(Units::GB, "GB"), (Units::MB, "MB"), (Units::KB, "KB"), (Units::Bytes, "B")] {
+                            for (u, l) in [(Units::TB, "TB"), (Units::GB, "GB"), (Units::MB, "MB"), (Units::KB, "KB"), (Units::Bytes, "B")] {
                                 if ui.add(egui::Button::new(RichText::new(l).small().strong()).selected(self.settings.units == u).min_size(egui::vec2(30.0, 18.0))).clicked() {
                                     out = Some(Cmd::SetUnits(u));
                                 }
@@ -189,6 +189,9 @@ impl App {
                     });
                     group(ui, &cap("GrpToolsTitleAction", "Tools"), |ui| {
                         self.big(ui, &mut out, Cmd::Filter, Icon::Filter, "Filter");
+                        self.big(ui, &mut out, Cmd::ClearFilter, Icon::Exclude, "Clear filter");
+                        self.big(ui, &mut out, Cmd::ToggleHideEmpty, Icon::Folder, "Hide empty folders");
+                        self.big(ui, &mut out, Cmd::Find, Icon::Types, "Find in tree");
                         self.big(ui, &mut out, Cmd::RestartAdmin, Icon::Bolt, "Restart as Administrator");
                         let resp = big_button(ui, Icon::Export, &tr("Export"), self.loaded.is_some() && !scanning, false);
                         egui::Popup::menu(&resp).show(|ui| {
@@ -231,8 +234,46 @@ impl App {
                 3 => {
                     group(ui, &cap("GrpViewTitleAction", "View"), |ui| {
                         self.big(ui, &mut out, Cmd::ToggleDetails, Icon::Details, "Show Details");
+                        let resp = big_button(ui, Icon::Details, &tr("Configure columns"), true, false);
+                        egui::Popup::menu(&resp).show(|ui| {
+                            for (c, label) in [(SortCol::Size, "Size"), (SortCol::Alloc, "Allocated"), (SortCol::Percent, "% of Parent"), (SortCol::Files, "Files"), (SortCol::Folders, "Folders"), (SortCol::Modified, "Last Modified")] {
+                                let mut on = self.column_visible(c);
+                                if ui.checkbox(&mut on, tr(label)).clicked() {
+                                    self.toggle_column(c);
+                                }
+                            }
+                        });
+                        let resp = big_button(ui, Icon::Percent, &tr("Decimals"), true, false);
+                        egui::Popup::menu(&resp).show(|ui| {
+                            for n in 0..=3u8 {
+                                if ui.selectable_label(self.settings.decimals == n, n.to_string()).clicked() {
+                                    self.settings.decimals = n;
+                                    ui.close();
+                                }
+                            }
+                        });
                         self.big(ui, &mut out, Cmd::ToggleMap, Icon::Treemap, "Proportional map");
                         self.big(ui, &mut out, Cmd::ExpandFull, Icon::Expand, "Expand all");
+                    });
+                    group(ui, &tr("Proportional map"), |ui| {
+                        self.big(ui, &mut out, Cmd::MapRight(false), Icon::Treemap, "Map at the bottom");
+                        self.big(ui, &mut out, Cmd::MapRight(true), Icon::Treemap, "Map on the right");
+                        let resp = big_button(ui, Icon::Tree, &tr("Level of detail"), self.settings.show_map, false);
+                        egui::Popup::menu(&resp).show(|ui| {
+                            for n in 1..=4u8 {
+                                if ui.selectable_label(self.settings.map_levels == n, format!("{} {n}", tr("Level"))).clicked() {
+                                    self.settings.map_levels = n;
+                                    ui.close();
+                                }
+                            }
+                        });
+                        ui.vertical(|ui| {
+                            ui.checkbox(&mut self.settings.map_unique_files, tr("Show unique files"));
+                            ui.checkbox(&mut self.settings.map_headers, tr("Show hierarchy"));
+                            ui.checkbox(&mut self.settings.map_legend, tr("Show legend"));
+                            ui.checkbox(&mut self.settings.map_labels, tr("Show labels"));
+                            ui.checkbox(&mut self.settings.map_free, tr("Show free space on the drive"));
+                        });
                     });
                     group(ui, &tr("Expand"), |ui| {
                         for n in 1..=3u8 {
