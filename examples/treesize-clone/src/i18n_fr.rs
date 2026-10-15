@@ -129,6 +129,8 @@ static FR: &[(&str, &str)] = &[
     ("Snapshot...", "Instantané..."),
     ("Copy paths", "Copier les chemins"),
     ("items selected", "éléments sélectionnés"),
+    ("Open in Explorer", "Ouvrir dans l'Explorateur"),
+    ("Copy path", "Copier le chemin"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
@@ -172,6 +174,23 @@ mod audit {
                     stack.push(p);
                 } else if p.extension().is_some_and(|x| x == "rs") {
                     let text = std::fs::read_to_string(&p).unwrap();
+                    // Labels handed to menu / ribbon helpers (`item(ui, "X", ..)`, `self.big(.., "X")`) are
+                    // translated later with `tr(label)`, so the literal itself must be audited too.
+                    for line in text.lines() {
+                        let l = line.trim();
+                        let lit = if let Some(r) = l.strip_prefix("item(ui, \"") {
+                            r.split('"').next()
+                        } else if l.starts_with("self.big(") && l.ends_with("\");") {
+                            l[..l.len() - 3].rsplit('"').next()
+                        } else {
+                            None
+                        };
+                        if let Some(lit) = lit.filter(|x| !x.is_empty() && !x.contains(',')) {
+                            if !crate::i18n::is_translated("fr", lit) && super::lookup(lit).is_none() {
+                                missing.insert(lit.to_string());
+                            }
+                        }
+                    }
                     let mut rest = text.as_str();
                     while let Some(i) = rest.find("tr(\"") {
                         rest = &rest[i + 4..];

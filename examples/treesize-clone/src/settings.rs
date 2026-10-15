@@ -160,7 +160,7 @@ impl Default for Settings {
         Self {
             last_path: String::new(),
             excludes: Vec::new(),
-            sort: SortKey::Size,
+            sort: SortKey::Alloc,
             sort_desc: true,
             view: ViewKind::Tree,
             language: "auto".into(),
@@ -181,7 +181,7 @@ impl Default for Settings {
             map_legend: true,
             map_labels: true,
             map_free: false,
-            size_mode: SizeMode::Size,
+            size_mode: SizeMode::Allocated,
             theme: Theme::Auto,
             window: None,
             col_widths: Vec::new(),

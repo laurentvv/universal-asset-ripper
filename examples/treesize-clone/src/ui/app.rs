@@ -282,6 +282,8 @@ struct NameDialog {
     new_folder: bool,
     text: String,
     err: String,
+    /// Focus has been given to the text field (only done on the first frame, otherwise Enter is swallowed).
+    focused: bool,
 }
 
 /// Result of comparing the current scan with an older snapshot.
@@ -1186,10 +1188,10 @@ impl App {
                 }
                 Action::Rename(id) => {
                     if let Some(l) = &self.loaded {
-                        self.name_dialog = Some(NameDialog { id, new_folder: false, text: l.tree.get(id).name.clone(), err: String::new() });
+                        self.name_dialog = Some(NameDialog { id, new_folder: false, text: l.tree.get(id).name.clone(), err: String::new(), focused: false });
                     }
                 }
-                Action::NewFolder(id) => self.name_dialog = Some(NameDialog { id, new_folder: true, text: String::new(), err: String::new() }),
+                Action::NewFolder(id) => self.name_dialog = Some(NameDialog { id, new_folder: true, text: String::new(), err: String::new(), focused: false }),
                 Action::Exclude(id) => {
                     if let Some(l) = &mut self.loaded {
                         self.excludes.push(l.tree.path_of(id));
@@ -2736,7 +2738,10 @@ impl App {
         egui::Window::new(title).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label(path.to_string_lossy());
             let r = ui.text_edit_singleline(&mut d.text);
-            r.request_focus();
+            if !d.focused {
+                r.request_focus();
+                d.focused = true;
+            }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 ok = true;
             }
