@@ -90,6 +90,7 @@ cargo test
 - Developer flag `--tab N` (0 File ... 5 Help) selects the ribbon tab for screenshots; `docs/screenshots/ribbon_view.png` shows the View tab.
 - **Multi-selection** in the tree: Ctrl+click toggles, Shift+click selects a range; the context menu (or Delete) then copies the paths, excludes or sends all selected rows to the Recycle Bin after one confirmation (rows below another selected folder are skipped). Export writes the selected folder.
 - **Explorer context menu** entry "Analyze with TreeSize" (folders, folder backgrounds, drives) toggled from Options; written under `HKCU\Software\Classes` only, removed when unticked (`src/shell_ext.rs`, round trip tested against the real registry).
+- **Versus TreeSize Free (latest portable), `C:\Windows`, same machine**: identical totals (46.1 GB, 210 074 files, 186 721 folders, 49 errors). Time until the process stops using CPU: about 5 s for the clone against about 29 s for TreeSize Free (rough, from CPU polling, one run each); peak working set 432-448 MB for the clone against 247 MB for TreeSize Free (an idle clone window already takes 191 MB for egui/wgpu, 296 MB once the scan is done, so memory is the clone's weak point). A fair `C:\` comparison was not possible: TreeSize Free exited after ~12 s (probably relaunching elevated).
 - Measured on this machine: `C:\` (3.75 M files, 655 k folders) scans in about 24 s (peak working set about 1.0 GB after reserving the final arena up front (was 1.25 GB)); long paths beyond MAX_PATH are scanned.
 
 ## Derived from the extracted assets vs written from scratch
