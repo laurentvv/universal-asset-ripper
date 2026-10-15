@@ -234,6 +234,26 @@ impl App {
                         self.big(ui, &mut out, Cmd::ToggleMap, Icon::Treemap, "Proportional map");
                         self.big(ui, &mut out, Cmd::ExpandFull, Icon::Expand, "Expand all");
                     });
+                    group(ui, &tr("Proportional map"), |ui| {
+                        self.big(ui, &mut out, Cmd::MapRight(false), Icon::Treemap, "Map at the bottom");
+                        self.big(ui, &mut out, Cmd::MapRight(true), Icon::Treemap, "Map on the right");
+                        let resp = big_button(ui, Icon::Tree, &tr("Level of detail"), self.settings.show_map, false);
+                        egui::Popup::menu(&resp).show(|ui| {
+                            for n in 1..=4u8 {
+                                if ui.selectable_label(self.settings.map_levels == n, format!("{} {n}", tr("Level"))).clicked() {
+                                    self.settings.map_levels = n;
+                                    ui.close();
+                                }
+                            }
+                        });
+                        ui.vertical(|ui| {
+                            ui.checkbox(&mut self.settings.map_unique_files, tr("Show unique files"));
+                            ui.checkbox(&mut self.settings.map_headers, tr("Show hierarchy"));
+                            ui.checkbox(&mut self.settings.map_legend, tr("Show legend"));
+                            ui.checkbox(&mut self.settings.map_labels, tr("Show labels"));
+                            ui.checkbox(&mut self.settings.map_free, tr("Show free space on the drive"));
+                        });
+                    });
                     group(ui, &tr("Expand"), |ui| {
                         for n in 1..=3u8 {
                             self.big(ui, &mut out, Cmd::ExpandLevel(n), Icon::Tree, &format!("Level {n}"));

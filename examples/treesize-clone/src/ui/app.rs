@@ -1082,6 +1082,7 @@ impl App {
             Cmd::SetUnits(u) => self.settings.units == u,
             Cmd::ToggleDetails => self.settings.details,
             Cmd::ToggleMap => self.settings.show_map,
+            Cmd::MapRight(r) => self.settings.map_right == r,
             Cmd::Filter => self.show_filters,
             Cmd::SetView(v) => self.view == v,
             Cmd::ToggleFast => self.fast_ntfs,
@@ -1135,6 +1136,10 @@ impl App {
             Cmd::SetUnits(u) => self.settings.units = u,
             Cmd::ToggleDetails => self.settings.details = !self.settings.details,
             Cmd::ToggleMap => self.settings.show_map = !self.settings.show_map,
+            Cmd::MapRight(r) => {
+                self.settings.map_right = r;
+                self.settings.show_map = true;
+            }
             Cmd::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::NewInstance => {
                 if let Ok(exe) = std::env::current_exe() {
@@ -1917,7 +1922,10 @@ impl App {
         let tree = &l.tree;
         let mut ev = None;
         match self.view {
-            ViewKind::Treemap => ev = views::treemap_view(ui, tree, &mut self.view_root, &mut self.selected, false),
+            ViewKind::Treemap => {
+                let style = self.map_style(self.view_root);
+                ev = views::treemap_view(ui, tree, &mut self.view_root, &mut self.selected, false, &style)
+            }
             ViewKind::Chart => views::chart_view(ui, tree, &mut self.view_root),
             ViewKind::Types => views::types_view(ui, self.types_cache.as_deref().unwrap_or(&[])),
             ViewKind::Largest => {
@@ -2211,6 +2219,20 @@ impl App {
 
     /// Proportional map docked under the tree: shows the selected folder (the scan root when
     /// nothing, or a file, is selected); clicking a tile selects it in the tree.
+    /// Style of the docked / full-size map from the settings; free space only for a drive root.
+    fn map_style(&self, root: NodeId) -> views::MapStyle {
+        let s = &self.settings;
+        let drive_root = self.loaded.as_ref().is_some_and(|l| root == Tree::ROOT && scan::volume_root(&l.root) == l.root);
+        views::MapStyle {
+            levels: s.map_levels.clamp(1, 4),
+            unique_files: s.map_unique_files,
+            headers: s.map_headers,
+            legend: s.map_legend,
+            labels: s.map_labels,
+            free_space: (s.map_free && drive_root).then(|| self.disk.as_ref().map(|d| d.free)).flatten(),
+        }
+    }
+
     fn map_panel(&mut self, ui: &mut egui::Ui) {
         let Some(l) = &self.loaded else { return };
         let tree = &l.tree;
@@ -2218,27 +2240,48 @@ impl App {
         if !tree.get(root).is_dir {
             root = tree.get(root).parent.min(tree.nodes.len() as u32 - 1);
         }
-        // Drag handle on the top edge (the panel itself is fixed-size: its content would otherwise grow to the maximum).
-        let (hrect, hresp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), Sense::drag());
+        // Drag handle on the inner edge (the panel itself is fixed-size: its content would otherwise grow to the maximum).
+        let right = self.settings.map_right;
+        let full = ui.max_rect();
+        let hrect = if right { egui::Rect::from_min_size(full.min, egui::vec2(5.0, full.height())) } else { egui::Rect::from_min_size(full.min, egui::vec2(full.width(), 5.0)) };
+        let hresp = ui.interact(hrect, egui::Id::new("map_handle"), Sense::drag());
         if hresp.hovered() || hresp.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            ui.ctx().set_cursor_icon(if right { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         }
         if hresp.dragged() {
-            let screen_h = ui.ctx().content_rect().height();
-            let cur = if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen_h * 0.36).max(180.0) };
-            self.settings.map_height = (cur - hresp.drag_delta().y).clamp(100.0, (screen_h * 0.7).max(120.0));
+            let screen = ui.ctx().content_rect();
+            let (cur, delta, limit) = if right {
+                (if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen.width() * 0.42).max(260.0) }, hresp.drag_delta().x, screen.width() * 0.75)
+            } else {
+                (if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen.height() * 0.36).max(180.0) }, hresp.drag_delta().y, screen.height() * 0.7)
+            };
+            self.settings.map_height = (cur - delta).clamp(100.0, limit.max(120.0));
         }
-        ui.painter().rect_filled(hrect.shrink2(egui::vec2(0.0, 1.5)), 0.0, if hresp.hovered() { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.noninteractive.bg_stroke.color });
-        let mut close = false;
-        ui.horizontal(|ui| {
-            let n = tree.get(root);
-            ui.label(RichText::new(format!("{} ({})", tree.path_of(root).display(), format_bytes(n.size))).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                close = ui.small_button("x").on_hover_text(tr("Close")).clicked();
-            });
-        });
-        let mut sel = self.selected;
-        let ev = views::treemap_view(ui, tree, &mut root, &mut sel, true);
+        let line = if hresp.hovered() { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.noninteractive.bg_stroke.color };
+        ui.painter().rect_filled(if right { hrect.shrink2(egui::vec2(1.5, 0.0)) } else { hrect.shrink2(egui::vec2(0.0, 1.5)) }, 0.0, line);
+        if right {
+            ui.add_space(0.0);
+        } else {
+            ui.add_space(5.0);
+        }
+        let margin = egui::Margin { left: if right { 7 } else { 0 }, ..Default::default() };
+        let (close, ev) = egui::Frame::new()
+            .inner_margin(margin)
+            .show(ui, |ui| {
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    let n = tree.get(root);
+                    ui.label(RichText::new(format!("{} ({})", tree.path_of(root).display(), format_bytes(n.size))).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        close = ui.small_button("x").on_hover_text(tr("Close")).clicked();
+                    });
+                });
+                let mut sel = self.selected;
+                let style = self.map_style(root);
+                let ev = views::treemap_view(ui, tree, &mut root, &mut sel, true, &style);
+                (close, ev)
+            })
+            .inner;
         let ctx = ui.ctx().clone();
         if close {
             self.settings.show_map = false;
@@ -2688,9 +2731,18 @@ impl eframe::App for App {
             let screen_h = ui.ctx().content_rect().height();
             let h = if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen_h * 0.36).max(180.0) };
             let h = h.clamp(100.0, (screen_h * 0.7).max(120.0));
-            egui::Panel::bottom("map").resizable(false).exact_size(h).show(ui, |ui| {
-                self.map_panel(ui);
-            });
+            if self.settings.map_right {
+                let screen_w = ui.ctx().content_rect().width();
+                let w = if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen_w * 0.42).max(260.0) };
+                let w = w.clamp(160.0, (screen_w * 0.75).max(200.0));
+                egui::Panel::right("map_right").resizable(false).exact_size(w).show(ui, |ui| {
+                    self.map_panel(ui);
+                });
+            } else {
+                egui::Panel::bottom("map").resizable(false).exact_size(h).show(ui, |ui| {
+                    self.map_panel(ui);
+                });
+            }
         }
         egui::CentralPanel::default().show(ui, |ui| {
             self.admin_banner(ui);
