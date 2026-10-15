@@ -11,6 +11,7 @@ mod i18n;
 mod i18n_fr;
 mod scan;
 mod settings;
+mod shell_ext;
 mod shell;
 mod trash;
 mod ui;

@@ -106,6 +106,17 @@ impl App {
                 ui.vertical(|ui| {
                     ui.checkbox(&mut self.fast_ntfs, tr("Fast NTFS scan (admin)"));
                     ui.checkbox(&mut self.settings.always_admin, tr("Always start as administrator"));
+                    if cfg!(windows) {
+                        let mut on = *self.explorer_menu.get_or_insert_with(|| crate::shell_ext::is_installed(crate::shell_ext::KEY_NAME));
+                        if ui.checkbox(&mut on, tr("Show in the Explorer context menu")).changed() {
+                            let ok = if on {
+                                std::env::current_exe().is_ok_and(|exe| crate::shell_ext::install(&exe, crate::shell_ext::KEY_NAME, &tr("Analyze with TreeSize")))
+                            } else {
+                                crate::shell_ext::uninstall(crate::shell_ext::KEY_NAME)
+                            };
+                            self.explorer_menu = Some(if ok { on } else { !on });
+                        }
+                    }
                 });
                 ui.end_row();
             });
