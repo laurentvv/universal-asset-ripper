@@ -497,7 +497,8 @@ pub fn scan_live(root: &Path, progress: &Progress, cancel: &AtomicBool, excludes
     if let Some(sink) = sink {
         sink(live.snapshot());
     }
-    let mut nodes = Vec::new();
+    // Exact reservation: growing by doubling would transiently need twice the arena (hundreds of MB on a big drive).
+    let mut nodes = Vec::with_capacity((troot.files + troot.dirs) as usize + 1);
     flatten(troot, NONE, &mut nodes);
     ScanResult {
         root: root.to_path_buf(),
