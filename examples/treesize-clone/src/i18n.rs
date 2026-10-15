@@ -79,19 +79,27 @@ pub struct Catalog {
     pub nplurals: u32,
 }
 
-/// Remove Delphi `&` accelerators (`&&` is a literal ampersand).
+/// Remove Delphi `&` accelerators (`&&` is a literal ampersand). East-Asian catalogues write the
+/// accelerator as a trailing `(&X)` (for example `ファイル(&F)`): that whole group is dropped.
 pub fn strip_accel(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
-    let mut it = s.chars().peekable();
-    while let Some(c) = it.next() {
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '(' && chars.get(i + 1) == Some(&'&') && chars.get(i + 2).is_some_and(|k| *k != '&' && !k.is_whitespace()) && chars.get(i + 3) == Some(&')') {
+            i += 4;
+            continue;
+        }
         if c == '&' {
-            if it.peek() == Some(&'&') {
+            if chars.get(i + 1) == Some(&'&') {
                 out.push('&');
-                it.next();
+                i += 1;
             }
         } else {
             out.push(c);
         }
+        i += 1;
     }
     out
 }
@@ -383,6 +391,9 @@ mod tests {
         assert_eq!(strip_accel("&File"), "File");
         assert_eq!(strip_accel("A&nd && more"), "And & more");
         assert_eq!(strip_accel("plain"), "plain");
+        assert_eq!(strip_accel("ファイル(&F)"), "ファイル");
+        assert_eq!(strip_accel("Save (&& more)"), "Save (& more)");
+        assert_eq!(strip_accel("Edit (&Ab)"), "Edit (Ab)");
     }
 
     #[test]
