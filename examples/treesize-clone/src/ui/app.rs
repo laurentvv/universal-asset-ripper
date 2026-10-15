@@ -3232,7 +3232,12 @@ mod tests {
             std::fs::write(path, b"x").unwrap();
         }
         let t = scan::scan_simple(d.path()).tree;
-        let names = |q: &str| find_matches(&t, q).iter().map(|&i| t.get(i).name.clone()).collect::<Vec<_>>();
+        // Directory enumeration order is file-system dependent (APFS differs from NTFS): compare sorted.
+        let names = |q: &str| {
+            let mut v = find_matches(&t, q).iter().map(|&i| t.get(i).name.clone()).collect::<Vec<_>>();
+            v.sort();
+            v
+        };
         assert_eq!(names("report"), ["Report.txt", "report_old"]);
         assert_eq!(names("  NOTES "), ["notes.txt"]);
         assert!(names("zzz").is_empty() && names("").is_empty());
