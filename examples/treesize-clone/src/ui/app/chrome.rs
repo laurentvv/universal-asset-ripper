@@ -26,6 +26,7 @@ pub enum Cmd {
     SetView(ViewKind),
     ToggleFast,
     RescanSelected,
+    ToggleMap,
     SnapshotSave,
     SnapshotCompare,
     NewFolder,

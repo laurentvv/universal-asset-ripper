@@ -123,6 +123,10 @@ pub struct Settings {
     pub show_allocated: bool,
     /// Show the Files / Folders / Last Modified columns.
     pub details: bool,
+    /// Proportional map docked under the tree (like the original).
+    pub show_map: bool,
+    /// Height of the docked map panel in points (0 = automatic).
+    pub map_height: f32,
     pub size_mode: SizeMode,
     pub theme: Theme,
     pub window: Option<WindowGeom>,
@@ -145,6 +149,8 @@ impl Default for Settings {
             units: Units::Auto,
             show_allocated: true,
             details: true,
+            show_map: true,
+            map_height: 0.0,
             size_mode: SizeMode::Size,
             theme: Theme::Auto,
             window: None,
@@ -216,6 +222,8 @@ mod tests {
             units: Units::MB,
             show_allocated: false,
             details: false,
+            show_map: false,
+            map_height: 0.0,
             size_mode: SizeMode::Allocated,
             theme: Theme::Dark,
             window: Some(WindowGeom { w: 900.0, h: 600.0, x: Some(10.0), y: None }),

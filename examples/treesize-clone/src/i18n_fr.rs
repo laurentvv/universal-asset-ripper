@@ -105,6 +105,8 @@ static FR: &[(&str, &str)] = &[
     ("earlier scan", "analyse précédente"),
     ("Compare with", "Comparer avec"),
     ("Folder not found", "Dossier introuvable"),
+    ("Close", "Fermer"),
+    ("Proportional map", "Carte proportionnelle"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
