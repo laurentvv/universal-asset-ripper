@@ -101,6 +101,7 @@ static FR: &[(&str, &str)] = &[
     ("Size over time", "Taille au fil du temps"),
     ("Dismiss", "Ignorer"),
     ("folders could not be read (access denied).", "dossiers n'ont pas pu être lus (accès refusé)."),
+    ("Folder not found", "Dossier introuvable"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),

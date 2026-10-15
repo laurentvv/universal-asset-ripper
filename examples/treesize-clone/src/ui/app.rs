@@ -619,6 +619,11 @@ impl App {
             h.cancel();
         }
         let root = normalize_root(std::path::Path::new(&scan::model::clean_path_input(&self.path_text)));
+        if !root.is_dir() {
+            // Do not replace the current results by an empty tree for a typo.
+            self.status = format!("{}: {}", tr("Folder not found"), root.display());
+            return;
+        }
         self.status = format!("{} {} ...", tr("Scanning"), root.display());
         self.notice.clear();
         self.settings.last_path = root.to_string_lossy().into_owned();
