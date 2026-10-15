@@ -1921,7 +1921,9 @@ impl App {
         else {
             return;
         };
-        let res = export::export_to_file(&l.tree, Tree::ROOT, fmt, 8, &path);
+        // Export the selected folder when there is one (a file selection exports its folder), else everything.
+        let root = self.selected.filter(|&s| (s as usize) < l.tree.nodes.len()).map(|s| if l.tree.get(s).is_dir { s } else { l.tree.get(s).parent }).filter(|&s| s != NONE).unwrap_or(Tree::ROOT);
+        let res = export::export_to_file(&l.tree, root, fmt, 8, &path);
         self.notice = match res {
             Ok(()) => format!("{} {}", tr("Exported"), path.display()),
             Err(e) => format!("{}: {e}", tr("Export failed")),
