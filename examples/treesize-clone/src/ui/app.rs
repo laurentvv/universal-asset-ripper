@@ -214,6 +214,35 @@ fn find_matches(tree: &Tree, needle: &str) -> Vec<NodeId> {
     out
 }
 
+/// Row range between two nodes (inclusive, in display order); rows without a node are skipped.
+fn range_ids(rows: &[Option<NodeId>], a: NodeId, b: NodeId) -> Vec<NodeId> {
+    let (Some(i), Some(j)) = (rows.iter().position(|r| *r == Some(a)), rows.iter().position(|r| *r == Some(b))) else {
+        return vec![b];
+    };
+    let (lo, hi) = (i.min(j), i.max(j));
+    rows[lo..=hi].iter().flatten().copied().collect()
+}
+
+/// Drop every id that lies below another id of the set (deleting the parent already removes it).
+fn prune_nested(tree: &Tree, ids: Vec<NodeId>) -> Vec<NodeId> {
+    let set: HashSet<NodeId> = ids.iter().copied().collect();
+    let mut out: Vec<NodeId> = ids
+        .into_iter()
+        .filter(|&id| {
+            let mut cur = tree.get(id).parent;
+            while cur != NONE {
+                if set.contains(&cur) {
+                    return false;
+                }
+                cur = tree.get(cur).parent;
+            }
+            true
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
 fn expandable(tree: &Tree, id: NodeId) -> bool {
     let n = tree.get(id);
     n.is_dir && (!n.children.is_empty() || (tree.live.is_some() && tree.direct_files(id).count > 0))
@@ -229,6 +258,12 @@ enum Action {
     Exclude(NodeId),
     Delete(NodeId),
     Rescan(NodeId),
+    ToggleMulti(NodeId),
+    RangeMulti(NodeId),
+    /// Copy / delete / exclude every row of the multi-selection.
+    MultiCopy,
+    MultiDelete,
+    MultiExclude,
     Reveal(NodeId),
     Open(NodeId),
     Terminal(NodeId),
@@ -342,6 +377,9 @@ pub struct App {
     admin_hint: Option<usize>,
     scroll_to: Option<usize>,
     find_open: bool,
+    /// Rows picked with Ctrl+click / Shift+click (the single `selected` row stays the primary one).
+    multi: HashSet<NodeId>,
+    confirm_multi: Option<Vec<NodeId>>,
     find_focus: bool,
     find_stale: bool,
     find_text: String,
@@ -658,6 +696,8 @@ impl App {
             admin_hint: None,
             scroll_to: None,
             find_open: false,
+            multi: HashSet::new(),
+            confirm_multi: None,
             find_focus: false,
             find_stale: false,
             find_text: String::new(),
@@ -1036,7 +1076,54 @@ impl App {
                     }
                     self.rows_dirty = true;
                 }
-                Action::Select(id) => self.selected = Some(id),
+                Action::Select(id) => {
+                    self.selected = Some(id);
+                    self.multi.clear();
+                }
+                Action::ToggleMulti(id) => {
+                    if self.multi.is_empty() {
+                        self.multi.extend(self.selected);
+                    }
+                    if !self.multi.remove(&id) {
+                        self.multi.insert(id);
+                    }
+                    self.selected = Some(id);
+                }
+                Action::RangeMulti(id) => {
+                    let ids: Vec<Option<NodeId>> = self.rows.iter().map(|r| if let RowKind::Node(i) = r.kind { Some(i) } else { None }).collect();
+                    let anchor = self.selected.unwrap_or(id);
+                    self.multi = range_ids(&ids, anchor, id).into_iter().collect();
+                    self.selected = Some(id);
+                }
+                Action::MultiCopy => {
+                    if let Some(l) = &self.loaded {
+                        let mut ids: Vec<NodeId> = self.multi.iter().copied().collect();
+                        ids.sort_unstable();
+                        let text = ids.iter().map(|&i| l.tree.path_of(i).to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n");
+                        ctx.copy_text(text);
+                    }
+                }
+                Action::MultiDelete => {
+                    if let Some(l) = &self.loaded {
+                        let ids = prune_nested(&l.tree, self.multi.iter().copied().filter(|&i| i != Tree::ROOT).collect());
+                        if !ids.is_empty() {
+                            self.confirm_multi = Some(ids);
+                        }
+                    }
+                }
+                Action::MultiExclude => {
+                    if let Some(l) = &mut self.loaded {
+                        let ids = prune_nested(&l.tree, self.multi.iter().copied().filter(|&i| i != Tree::ROOT).collect());
+                        for id in ids {
+                            self.excludes.push(l.tree.path_of(id));
+                            l.tree.remove_subtree(id);
+                        }
+                        self.multi.clear();
+                        self.selected = None;
+                        self.view_root = Tree::ROOT;
+                        self.invalidate();
+                    }
+                }
                 Action::Properties(id) => self.props = Some(id),
                 Action::CopyPath(id) => {
                     if let Some(l) = &self.loaded {
@@ -1537,6 +1624,7 @@ impl App {
         let files_expanded = &self.files_expanded;
         let filtering = self.filter_set.is_some();
         let selected = self.selected;
+        let multi = self.multi.clone();
         let chev = self.chevrons.as_ref();
         let row_h = 20.0;
         let dark = ui.visuals().dark_mode;
@@ -1629,7 +1717,7 @@ impl App {
                     let is_root = !pseudo && n.parent == NONE;
                     let frac = if is_root { 1.0 } else if den > 0 { (num as f64 / den as f64).min(1.0) } else { 0.0 };
                     if !pseudo {
-                        trow.set_selected(selected == Some(id));
+                        trow.set_selected(selected == Some(id) || (multi.len() > 1 && multi.contains(&id)));
                     }
                     for &c in &cols {
                         trow.col(|ui| match c {
@@ -1722,7 +1810,8 @@ impl App {
                     }
                     let resp = trow.response();
                     if resp.clicked() && !pseudo {
-                        actions.push(Action::Select(id));
+                        let mods = resp.ctx.input(|i| i.modifiers);
+                        actions.push(if mods.command { Action::ToggleMulti(id) } else if mods.shift { Action::RangeMulti(id) } else { Action::Select(id) });
                     }
                     if resp.double_clicked() && pseudo && can_open {
                         actions.push(Action::ToggleFiles(dir_for_files));
@@ -1736,6 +1825,13 @@ impl App {
                         };
                         if pseudo {
                             item(ui, "Open in Explorer", Action::OpenExplorer(id));
+                            return;
+                        }
+                        if multi.len() > 1 && multi.contains(&id) {
+                            ui.label(RichText::new(format!("{} {}", multi.len(), tr("items selected"))).weak());
+                            item(ui, "Copy paths", Action::MultiCopy);
+                            item(ui, "Exclude", Action::MultiExclude);
+                            item(ui, "Delete (Recycle Bin)", Action::MultiDelete);
                             return;
                         }
                         let not_root = id != Tree::ROOT;
@@ -2697,7 +2793,10 @@ impl App {
             // Only where the selection is visible: a stale selection from another view must not be deletable blind.
             let selection_visible = matches!(self.view, ViewKind::Tree | ViewKind::Largest | ViewKind::Oldest | ViewKind::Cleanup);
             if selection_visible && ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
-                if let Some(id) = self.selected.filter(|&id| id != Tree::ROOT && self.handle.is_none()) {
+                if self.multi.len() > 1 && self.handle.is_none() {
+                    let ctx2 = ctx.clone();
+                    self.apply(&ctx2, vec![Action::MultiDelete]);
+                } else if let Some(id) = self.selected.filter(|&id| id != Tree::ROOT && self.handle.is_none()) {
                     self.confirm_delete = Some(id);
                 }
             }
@@ -2750,8 +2849,57 @@ impl App {
         }
     }
 
+    /// Confirmation and execution of deleting several tree rows at once.
+    fn multi_delete_window(&mut self, ctx: &egui::Context) {
+        let Some(ids) = self.confirm_multi.clone() else { return };
+        let Some(l) = &self.loaded else {
+            self.confirm_multi = None;
+            return;
+        };
+        // (id, path) pairs of the ids that still exist, so ids and paths can never get out of step.
+        let items: Vec<(NodeId, std::path::PathBuf)> = ids.iter().filter(|&&i| (i as usize) < l.tree.nodes.len()).map(|&i| (i, l.tree.path_of(i))).collect();
+        let total: u64 = items.iter().map(|(i, _)| l.tree.get(*i).size).sum();
+        let (mut yes, mut no) = (false, false);
+        egui::Window::new(tr("Delete (Recycle Bin)")).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(format!("{} {} - {}", items.len(), tr("items selected"), format_bytes(total)));
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                for (_, p) in items.iter().take(200) {
+                    ui.label(p.display().to_string());
+                }
+            });
+            ui.horizontal(|ui| {
+                yes = ui.button(tr("Delete")).clicked();
+                no = ui.button(tr("Cancel")).clicked();
+            });
+        });
+        if no {
+            self.confirm_multi = None;
+        } else if yes {
+            self.confirm_multi = None;
+            let mut failed = Vec::new();
+            for (id, path) in &items {
+                match crate::trash::recycle(path) {
+                    Ok(()) => {
+                        if let Some(l) = &mut self.loaded {
+                            l.tree.remove_subtree(*id);
+                        }
+                    }
+                    Err(e) => failed.push(format!("{}: {e}", path.display())),
+                }
+            }
+            self.multi.clear();
+            self.selected = None;
+            self.view_root = Tree::ROOT;
+            self.invalidate();
+            if !failed.is_empty() {
+                self.delete_error = Some(failed.join("\n"));
+            }
+        }
+    }
+
     fn windows(&mut self, ctx: &egui::Context) {
         self.options_window(ctx);
+        self.multi_delete_window(ctx);
         self.delete_window(ctx);
         self.name_window(ctx);
         self.files_delete_window(ctx);
@@ -3038,6 +3186,29 @@ mod tests {
         };
         assert_eq!(names(true), ["has_files"]);
         assert_eq!(names(false), ["has_files", "truly_empty"]);
+    }
+
+    #[test]
+    fn range_and_nested_pruning_for_multi_selection() {
+        let rows = [Some(1), None, Some(3), Some(4), Some(5)];
+        assert_eq!(range_ids(&rows, 1, 4), [1, 3, 4]);
+        assert_eq!(range_ids(&rows, 5, 3), [3, 4, 5], "direction does not matter");
+        assert_eq!(range_ids(&rows, 3, 99), [99], "unknown anchor: just the clicked row");
+
+        let d = tempfile::tempdir().unwrap();
+        for p in ["a/b/f.bin", "a/g.bin", "c/h.bin"] {
+            let path = d.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        let t = scan::scan_simple(d.path()).tree;
+        let id = |p: &[&str]| t.resolve_path(p).unwrap();
+        let picked = vec![id(&["a"]), id(&["a", "b"]), id(&["a", "b", "f.bin"]), id(&["c"])];
+        assert_eq!(prune_nested(&t, picked), {
+            let mut v = vec![id(&["a"]), id(&["c"])];
+            v.sort_unstable();
+            v
+        });
     }
 
     #[test]

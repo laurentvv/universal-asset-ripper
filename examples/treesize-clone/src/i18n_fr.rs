@@ -127,6 +127,8 @@ static FR: &[(&str, &str)] = &[
     ("Changes", "Changements"),
     ("Compare...", "Comparer..."),
     ("Snapshot...", "Instantané..."),
+    ("Copy paths", "Copier les chemins"),
+    ("items selected", "éléments sélectionnés"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
