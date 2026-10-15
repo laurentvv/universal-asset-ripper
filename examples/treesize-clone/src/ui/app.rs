@@ -245,6 +245,9 @@ pub struct App {
     dup_min: String,
     path_text: String,
     drives: Vec<String>,
+    /// Space usage of each drive for the start page, filled by a background thread.
+    drive_infos: Vec<(String, scan::DiskInfo)>,
+    drive_rx: Option<std::sync::mpsc::Receiver<Vec<(String, scan::DiskInfo)>>>,
     handle: Option<ScanHandle>,
     /// A live snapshot of the running scan has been shown (ids are then remapped by path).
     partial_seen: bool,
@@ -482,6 +485,15 @@ fn collect_shortcuts(items: &[Item], out: &mut Vec<(egui::KeyboardShortcut, Cmd)
 impl App {
     fn new(ctx: &egui::Context, st: Settings, opts: &RunOptions) -> Self {
         let drives = list_drives();
+        let drive_rx = {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let list = drives.clone();
+            std::thread::spawn(move || {
+                // Slow or disconnected volumes must not freeze the UI: this runs off-thread.
+                let _ = tx.send(list.into_iter().filter_map(|d| scan::disk_info(std::path::Path::new(&d)).map(|i| (d, i))).collect());
+            });
+            Some(rx)
+        };
         let first = drives.first().cloned().unwrap_or_default();
         let settings_path = if opts.screenshot.is_some() { None } else { settings::default_path() };
         let spec = dfm::main_spec();
@@ -541,6 +553,8 @@ impl App {
             dup_result: None,
             dup_min: "64KB".into(),
             drives,
+            drive_infos: Vec::new(),
+            drive_rx,
             handle: None,
             partial_seen: false,
             scan_started: Instant::now(),
@@ -1331,9 +1345,7 @@ impl App {
     fn tree_table(&mut self, ui: &mut egui::Ui) {
         let can_rescan = self.sub_scan.is_none() && self.handle.is_none();
         if self.loaded.is_none() {
-            ui.centered_and_justified(|ui| {
-                ui.label(tr("Pick a drive or type a path, then press Scan."));
-            });
+            self.start_page(ui);
             return;
         }
         if self.rows_dirty {
@@ -2114,6 +2126,66 @@ impl App {
                 }
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Start page: one card per drive with its space usage (click to scan), then recent folders.
+    fn start_page(&mut self, ui: &mut egui::Ui) {
+        if let Some(rx) = &self.drive_rx {
+            if let Ok(v) = rx.try_recv() {
+                self.drive_infos = v;
+                self.drive_rx = None;
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
+        }
+        ui.add_space(12.0);
+        ui.label(RichText::new(tr("Pick a drive or type a path, then press Scan.")).heading());
+        ui.add_space(10.0);
+        let loc = fmt::loc();
+        let mut start: Option<String> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+            for (d, info) in &self.drive_infos {
+                let used = info.total.saturating_sub(info.free);
+                let frac = if info.total > 0 { used as f32 / info.total as f32 } else { 0.0 };
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(280.0, 74.0), Sense::click());
+                let vis = ui.visuals();
+                let bg = if resp.hovered() { vis.widgets.hovered.weak_bg_fill } else { vis.widgets.inactive.weak_bg_fill };
+                let p = ui.painter();
+                p.rect_filled(rect, 4.0, bg);
+                p.rect_stroke(rect, 4.0, Stroke::new(1.0, vis.widgets.noninteractive.bg_stroke.color), egui::StrokeKind::Inside);
+                p.text(rect.min + egui::vec2(10.0, 8.0), egui::Align2::LEFT_TOP, format!("{d}  ({})", info.fs), egui::FontId::proportional(14.0), vis.text_color());
+                let bar = egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 32.0), egui::vec2(rect.width() - 20.0, 14.0));
+                p.rect_filled(bar, 2.0, vis.extreme_bg_color);
+                let mut fill = bar;
+                fill.set_width(bar.width() * frac);
+                let col = if frac > 0.9 { Color32::from_rgb(210, 70, 60) } else { Color32::from_rgb(90, 110, 220) };
+                p.rect_filled(fill, 2.0, col);
+                p.text(
+                    rect.min + egui::vec2(10.0, 52.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{} {} {} {}", fmt::format_bytes_short_in(info.free, loc), tr("free"), of_word(), fmt::format_bytes_short_in(info.total, loc)),
+                    egui::FontId::proportional(12.0),
+                    vis.weak_text_color(),
+                );
+                if resp.clicked() {
+                    start = Some(d.clone());
+                }
+            }
+        });
+        if !self.settings.recent.is_empty() {
+            ui.add_space(16.0);
+            ui.label(RichText::new(tr("Recent")).strong());
+            for r in self.settings.recent.clone() {
+                if ui.add(egui::Button::new(&r).frame(false)).clicked() {
+                    start = Some(r);
+                }
+            }
+        }
+        if let Some(p) = start {
+            self.path_text = p;
+            self.start_scan();
         }
     }
 
