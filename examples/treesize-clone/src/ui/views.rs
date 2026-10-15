@@ -18,6 +18,7 @@ pub enum MenuAct {
     CopyPath,
     Properties,
     Delete,
+    Reveal,
 }
 
 /// Right-click menu shared by the ranked lists and the clean-up list.
@@ -27,6 +28,7 @@ pub fn row_menu(resp: &egui::Response, id: NodeId) -> Option<ListEvent> {
         for (label, act) in [
             ("Open", MenuAct::OpenItem),
             ("Open in Explorer", MenuAct::Explorer),
+            ("Show in tree", MenuAct::Reveal),
             ("Copy path", MenuAct::CopyPath),
             ("Windows properties", MenuAct::Properties),
             ("Delete (Recycle Bin)", MenuAct::Delete),
