@@ -11,6 +11,16 @@ pub enum Format {
 }
 
 impl Format {
+    /// Format for a file name (`report.csv`, `tree.JSON`, `r.html`); `None` for anything else.
+    pub fn from_path(path: &std::path::Path) -> Option<Format> {
+        match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+            "csv" => Some(Format::Csv),
+            "json" => Some(Format::Json),
+            "html" | "htm" => Some(Format::Html),
+            _ => None,
+        }
+    }
+
     pub fn ext(self) -> &'static str {
         match self {
             Format::Csv => "csv",
