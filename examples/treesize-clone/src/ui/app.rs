@@ -5,7 +5,7 @@ mod ribbon;
 use self::chrome::{cmd_for, hint_text, pruned, shortcut_text, to_egui_shortcut, Cmd};
 use super::assets::{self, Chevrons};
 use super::paint::{self, Icon};
-use super::views::{self, ListEvent};
+use super::views::{self, ListEvent, MenuAct};
 use crate::analysis::duplicates::{self, DupGroup};
 use crate::analysis::filter::{self, Filter};
 use crate::analysis::insights::{self, AgeBucket};
@@ -1849,7 +1849,7 @@ impl App {
         let tree = &l.tree;
         let mut ev = None;
         match self.view {
-            ViewKind::Treemap => views::treemap_view(ui, tree, &mut self.view_root, &mut self.selected),
+            ViewKind::Treemap => ev = views::treemap_view(ui, tree, &mut self.view_root, &mut self.selected),
             ViewKind::Chart => views::chart_view(ui, tree, &mut self.view_root),
             ViewKind::Types => views::types_view(ui, self.types_cache.as_deref().unwrap_or(&[])),
             ViewKind::Largest => {
@@ -1860,10 +1860,31 @@ impl App {
             }
             ViewKind::Tree | ViewKind::Duplicates | ViewKind::Compare | ViewKind::Cleanup | ViewKind::Age => {}
         }
+        let ctx = ui.ctx().clone();
+        self.list_event(&ctx, ev);
+    }
+
+    /// Handle what a ranked / clean-up list reported (selection, open, right-click menu).
+    fn list_event(&mut self, ctx: &egui::Context, ev: Option<ListEvent>) {
         match ev {
             Some(ListEvent::Select(id)) => self.selected = Some(id),
-            Some(ListEvent::Open(id)) => open_in_explorer(&tree.path_of(id)),
+            Some(ListEvent::Open(id)) => {
+                if let Some(l) = &self.loaded {
+                    open_in_explorer(&l.tree.path_of(id));
+                }
+            }
             Some(ListEvent::OpenPath(p)) => open_in_explorer(std::path::Path::new(&p)),
+            Some(ListEvent::Menu(id, act)) => {
+                self.selected = Some(id);
+                let actions = match act {
+                    MenuAct::OpenItem => vec![Action::Open(id)],
+                    MenuAct::Explorer => vec![Action::OpenExplorer(id)],
+                    MenuAct::CopyPath => vec![Action::CopyPath(id)],
+                    MenuAct::Properties => vec![Action::ShellProps(id)],
+                    MenuAct::Delete => vec![Action::Delete(id)],
+                };
+                self.apply(ctx, actions);
+            }
             None => {}
         }
     }
@@ -2133,15 +2154,9 @@ impl App {
             }
             ui.weak(tr("Select a folder, then delete it. Nothing is removed without confirmation."));
         });
-        match views::cleanup_list(ui, &rows, self.selected) {
-            Some(ListEvent::Select(id)) => self.selected = Some(id),
-            Some(ListEvent::Open(id)) => {
-                if let Some(l) = &self.loaded {
-                    open_in_explorer(&l.tree.path_of(id));
-                }
-            }
-            _ => {}
-        }
+        let ev = views::cleanup_list(ui, &rows, self.selected);
+        let ctx = ui.ctx().clone();
+        self.list_event(&ctx, ev);
     }
 
     /// Confirmation (and execution) of a batch of file deletions from the duplicate finder.
