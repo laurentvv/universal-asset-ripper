@@ -81,10 +81,6 @@ pub fn category_of(ext: &str) -> Category {
     }
 }
 
-pub fn category_of_name(name: &str) -> Category {
-    category_of(&ext_of(name))
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeStat {
     /// Lower-case extension; empty for files without one.
@@ -286,7 +282,6 @@ mod tests {
         assert_eq!(ext_of("trailing."), "");
         assert_eq!(category_of("mp4"), Category::Video);
         assert_eq!(category_of("zzz"), Category::Other);
-        assert_eq!(category_of_name("a.tar.gz"), Category::Archives);
     }
 
     #[test]

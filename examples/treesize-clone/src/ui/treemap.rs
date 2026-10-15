@@ -1,4 +1,6 @@
-//! Pure layout maths for the treemap (squarified) and the pie chart. No egui types.
+//! Pure layout maths for the treemap (squarified, nested) and the pie chart. No egui types.
+
+use crate::scan::{NodeId, Tree};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Rect {
@@ -93,11 +95,6 @@ pub fn squarify(sizes: &[u64], bounds: Rect) -> Vec<Rect> {
     out
 }
 
-/// Index of the rectangle under the point, if any.
-pub fn hit_test(rects: &[Rect], px: f32, py: f32) -> Option<usize> {
-    rects.iter().position(|r| r.w > 0.0 && r.h > 0.0 && r.contains(px, py))
-}
-
 /// Pie slices as `(start, end)` angles in radians, starting at `-PI/2` (12 o'clock), clockwise.
 pub fn pie_angles(values: &[u64]) -> Vec<(f32, f32)> {
     let total: f64 = values.iter().map(|&v| v as f64).sum();
@@ -117,9 +114,128 @@ pub fn pie_angles(values: &[u64]) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// Height of the caption strip of a folder tile.
+pub const HEADER_H: f32 = 15.0;
+const PAD: f32 = 2.0;
+
+/// One tile of the nested treemap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tile {
+    /// Folder (or file) shown; for a `[N Files]` tile the folder that owns those files.
+    pub id: NodeId,
+    pub rect: Rect,
+    /// Nesting level (0 = the folder being shown).
+    pub depth: u8,
+    /// The tile stands for the direct files of folder `id` (one aggregated block).
+    pub files_of: bool,
+    /// Children are laid out inside this tile, below a caption strip.
+    pub has_header: bool,
+}
+
+/// Nested squarified layout: every folder holds its sub-folders and one aggregated tile for its
+/// direct files, down to `max_depth` levels. Parents come before their children. Tiles smaller
+/// than a few pixels are dropped and the total is capped at `max_tiles`.
+pub fn nested(tree: &Tree, root: NodeId, area: Rect, max_depth: u8, max_tiles: usize) -> Vec<Tile> {
+    let mut out = Vec::new();
+    if tree.nodes.is_empty() || area.w < 4.0 || area.h < 4.0 || tree.get(root).size == 0 {
+        return out;
+    }
+    place_dir(tree, root, area, 0, max_depth, max_tiles, &mut out);
+    out
+}
+
+fn place_dir(tree: &Tree, id: NodeId, rect: Rect, depth: u8, max_depth: u8, max_tiles: usize, out: &mut Vec<Tile>) {
+    let node = tree.get(id);
+    let can_nest = depth < max_depth && rect.w > 36.0 && rect.h > HEADER_H + 14.0 && node.is_dir && !node.children.is_empty();
+    out.push(Tile { id, rect, depth, files_of: false, has_header: can_nest });
+    if !can_nest {
+        return;
+    }
+    let inner = Rect::new(rect.x + PAD, rect.y + HEADER_H, (rect.w - 2.0 * PAD).max(0.0), (rect.h - HEADER_H - PAD).max(0.0));
+    // Children: folders by size, then the aggregated files block.
+    let mut items: Vec<(NodeId, u64, bool)> = node.children.iter().copied().filter(|&c| tree.get(c).is_dir && tree.get(c).size > 0).map(|c| (c, tree.get(c).size, false)).collect();
+    let files = tree.direct_files(id);
+    if files.size > 0 {
+        items.push((id, files.size, true));
+    }
+    items.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    items.truncate(400);
+    let sizes: Vec<u64> = items.iter().map(|i| i.1).collect();
+    let rects = squarify(&sizes, inner);
+    for (item, r) in items.iter().zip(rects) {
+        if r.w < 3.0 || r.h < 3.0 || out.len() >= max_tiles {
+            continue;
+        }
+        if item.2 {
+            out.push(Tile { id: item.0, rect: r, depth: depth + 1, files_of: true, has_header: false });
+        } else {
+            place_dir(tree, item.0, r, depth + 1, max_depth, max_tiles, out);
+        }
+    }
+}
+
+/// Topmost (deepest) tile under the point.
+pub fn tile_at(tiles: &[Tile], px: f32, py: f32) -> Option<usize> {
+    tiles.iter().rposition(|t| t.rect.contains(px, py))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_tiles_stay_inside_their_parent_and_siblings_do_not_overlap() {
+        let d = tempfile::tempdir().unwrap();
+        for (p, n) in [("a/x/f1.bin", 4000), ("a/y/f2.bin", 2000), ("a/top.bin", 1000), ("b/f3.bin", 3000), ("b/z/f4.bin", 500)] {
+            let path = d.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![0u8; n]).unwrap();
+        }
+        let tree = crate::scan::scan_simple(d.path()).tree;
+        let area = Rect::new(0.0, 0.0, 800.0, 500.0);
+        let tiles = nested(&tree, Tree::ROOT, area, 3, 1000);
+        assert_eq!(tiles[0].depth, 0);
+        assert_eq!(tiles[0].rect, area);
+        // Every tile is inside the root and inside the nearest preceding shallower tile.
+        for (i, t) in tiles.iter().enumerate().skip(1) {
+            let parent = tiles[..i].iter().rev().find(|p| p.depth + 1 == t.depth).expect("parent before child");
+            let (pr, r) = (parent.rect, t.rect);
+            assert!(r.x >= pr.x - 0.01 && r.y >= pr.y + HEADER_H - 0.01 && r.x + r.w <= pr.x + pr.w + 0.01 && r.y + r.h <= pr.y + pr.h + 0.01, "tile {i} escapes its parent");
+        }
+        // Siblings (same parent) never overlap.
+        for i in 0..tiles.len() {
+            for j in i + 1..tiles.len() {
+                if tiles[i].depth == tiles[j].depth && tiles[i].depth > 0 {
+                    let (a, b) = (tiles[i].rect, tiles[j].rect);
+                    let eps = 1e-2;
+                    let ov = a.x < b.x + b.w - eps && b.x < a.x + a.w - eps && a.y < b.y + b.h - eps && b.y < a.y + a.h - eps;
+                    assert!(!ov, "tiles {i} and {j} overlap");
+                }
+            }
+        }
+        // Folder a (7000 bytes) is bigger than b (3500): bigger tile.
+        let area_of = |name: &str| tiles.iter().find(|t| !t.files_of && t.depth == 1 && tree.get(t.id).name == name).map(|t| t.rect.area()).unwrap();
+        assert!(area_of("a") > area_of("b") * 1.8 && area_of("a") < area_of("b") * 2.2, "areas follow sizes (7000 vs 3500)");
+        // The aggregated files tile of `a` exists with the owning folder id.
+        assert!(tiles.iter().any(|t| t.files_of && tree.get(t.id).name == "a"));
+        assert!(tile_at(&tiles, 400.0, 250.0).is_some());
+        assert!(nested(&tree, Tree::ROOT, Rect::new(0.0, 0.0, 2.0, 2.0), 3, 100).is_empty());
+    }
+
+    #[test]
+    fn nested_respects_depth_and_tile_cap() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..30 {
+            let path = d.path().join(format!("dir{i}/sub/f.bin"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![0u8; 100 + i]).unwrap();
+        }
+        let tree = crate::scan::scan_simple(d.path()).tree;
+        let area = Rect::new(0.0, 0.0, 900.0, 600.0);
+        assert!(nested(&tree, Tree::ROOT, area, 0, 1000).len() == 1, "depth 0: just the root");
+        assert!(nested(&tree, Tree::ROOT, area, 3, 10).len() <= 10 + 1);
+        assert!(nested(&tree, Tree::ROOT, area, 3, 1000).iter().all(|t| t.depth <= 3));
+    }
 
     fn overlap(a: &Rect, b: &Rect) -> bool {
         let eps = 1e-2;
@@ -187,15 +303,6 @@ mod tests {
         assert!(squarify(&[], Rect::new(0.0, 0.0, 10.0, 10.0)).is_empty());
         assert_eq!(squarify(&[0, 0], Rect::new(0.0, 0.0, 10.0, 10.0)), vec![Rect::ZERO; 2]);
         assert_eq!(squarify(&[5], Rect::new(0.0, 0.0, 0.0, 10.0)), vec![Rect::ZERO]);
-    }
-
-    #[test]
-    fn hit_testing() {
-        let b = Rect::new(0.0, 0.0, 100.0, 100.0);
-        let rs = squarify(&[75, 25], b);
-        assert_eq!(hit_test(&rs, 1.0, 1.0), Some(0));
-        assert_eq!(hit_test(&rs, 99.0, 99.0), Some(1));
-        assert_eq!(hit_test(&rs, 150.0, 5.0), None);
     }
 
     #[test]
