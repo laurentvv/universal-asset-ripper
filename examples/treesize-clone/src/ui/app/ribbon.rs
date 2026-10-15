@@ -26,7 +26,20 @@ fn split_caption(ui: &egui::Ui, text: &str, font: &egui::FontId, max_w: f32) -> 
     }
     match best {
         Some((_, i)) => vec![text[..i].to_string(), text[i + 1..].to_string()],
-        None => vec![text.to_string()],
+        None => {
+            // No space to break at (CJK, long single words): split between characters.
+            let mut cut: Option<(f32, usize)> = None;
+            for (i, _) in text.char_indices().skip(1) {
+                let w = width(&text[..i]).max(width(&text[i..]));
+                if cut.is_none_or(|(bw, _)| w < bw) {
+                    cut = Some((w, i));
+                }
+            }
+            match cut {
+                Some((_, i)) => vec![text[..i].to_string(), text[i..].to_string()],
+                None => vec![text.to_string()],
+            }
+        }
     }
 }
 
@@ -43,7 +56,7 @@ fn big_button(ui: &mut egui::Ui, ic: Icon, label: &str, enabled: bool, checked: 
     paint::icon(ui.painter(), egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 19.0), egui::vec2(28.0, 28.0)), ic, enabled);
     let font = egui::FontId::proportional(11.5);
     for (i, line) in split_caption(ui, label, &font, rect.width() - 2.0).iter().take(2).enumerate() {
-        ui.painter().text(egui::pos2(rect.center().x, rect.top() + 37.0 + i as f32 * 12.5), egui::Align2::CENTER_TOP, line, font.clone(), col);
+        ui.painter().with_clip_rect(rect).text(egui::pos2(rect.center().x, rect.top() + 37.0 + i as f32 * 12.5), egui::Align2::CENTER_TOP, line, font.clone(), col);
     }
     resp
 }
