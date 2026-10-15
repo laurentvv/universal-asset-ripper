@@ -170,6 +170,7 @@ enum Action {
     Exclude(NodeId),
     Delete(NodeId),
     Rescan(NodeId),
+    Reveal(NodeId),
     Open(NodeId),
     Terminal(NodeId),
     ExpandBranch(NodeId),
@@ -278,6 +279,8 @@ pub struct App {
     confirm_files: Option<Vec<(PathBuf, u64)>>,
     comparison: Option<Comparison>,
     scroll_to: Option<usize>,
+    /// Node to scroll to once the tree rows have been rebuilt ("Show in tree").
+    reveal: Option<NodeId>,
     compare_notice: String,
     /// Background re-scan of one folder: its name path (stable across tree edits) and the scan.
     sub_scan: Option<(Vec<String>, ScanHandle)>,
@@ -572,6 +575,7 @@ impl App {
             confirm_files: None,
             comparison: None,
             scroll_to: None,
+            reveal: None,
             compare_notice: String::new(),
             sub_scan: None,
             delete_error: None,
@@ -928,6 +932,7 @@ impl App {
                 }
                 Action::Delete(id) => self.confirm_delete = Some(id),
                 Action::Rescan(id) => self.start_sub_scan(id),
+                Action::Reveal(id) => self.reveal_in_tree(id),
                 Action::Open(id) => {
                     if let Some(l) = &self.loaded {
                         crate::shell::open(&l.tree.path_of(id));
@@ -1350,6 +1355,11 @@ impl App {
         }
         if self.rows_dirty {
             self.rebuild_rows();
+        }
+        if let Some(id) = self.reveal.take() {
+            if let Some(pos) = self.rows.iter().position(|r| matches!(r.kind, RowKind::Node(i) if i == id)) {
+                self.scroll_to = Some(pos);
+            }
         }
         let cols = self.tree_columns();
         let captions: Vec<String> = cols.iter().map(|&c| self.column_caption(c)).collect();
@@ -1894,6 +1904,7 @@ impl App {
                     MenuAct::CopyPath => vec![Action::CopyPath(id)],
                     MenuAct::Properties => vec![Action::ShellProps(id)],
                     MenuAct::Delete => vec![Action::Delete(id)],
+                    MenuAct::Reveal => vec![Action::Reveal(id)],
                 };
                 self.apply(ctx, actions);
             }
@@ -2005,6 +2016,28 @@ impl App {
         let dir = if p.is_dir() { p } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) };
         self.path_text = dir.to_string_lossy().into_owned();
         self.start_scan();
+    }
+
+    /// Switch to the tree, expand every ancestor of `id`, select it and scroll to it.
+    fn reveal_in_tree(&mut self, id: NodeId) {
+        let Some(l) = &self.loaded else { return };
+        if id as usize >= l.tree.nodes.len() {
+            return;
+        }
+        let n = l.tree.get(id);
+        if !n.is_dir && n.parent != NONE {
+            // Files live under the aggregated "[N Files]" row of their folder.
+            self.files_expanded.insert(n.parent);
+        }
+        let mut cur = n.parent;
+        while cur != NONE {
+            self.expanded.insert(cur);
+            cur = l.tree.get(cur).parent;
+        }
+        self.selected = Some(id);
+        self.view = ViewKind::Tree;
+        self.rows_dirty = true;
+        self.reveal = Some(id);
     }
 
     /// Keyboard navigation of the tree rows (arrows, Home/End, Page keys, Enter).
