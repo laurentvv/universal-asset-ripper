@@ -98,7 +98,9 @@ fn build_sib(tree: &Tree, id: NodeId, filtering: bool, sort: SortCol, desc: bool
     let mut items: Vec<(RowKind, Key)> = Vec::new();
     for &c in &tree.get(id).children {
         let n = tree.get(c);
-        if hide_empty && n.is_dir && n.children.is_empty() && !n.scanning {
+        // Aggregated counts, not `children`: live snapshots hold directories only, so a folder
+        // full of files has no child nodes there.
+        if hide_empty && n.is_dir && n.files == 0 && n.dirs == 0 && !n.scanning {
             continue;
         }
         if filtering || n.is_dir {
@@ -191,11 +193,17 @@ fn find_matches(tree: &Tree, needle: &str) -> Vec<NodeId> {
     if needle.is_empty() || tree.nodes.is_empty() {
         return Vec::new();
     }
+    // ASCII needles (the common case) are matched without allocating a lowercase copy per node.
+    let ascii = needle.is_ascii().then_some(needle.as_bytes());
+    let matches = |name: &str| match ascii {
+        Some(nb) => name.as_bytes().windows(nb.len()).any(|w| w.eq_ignore_ascii_case(nb)),
+        None => name.to_lowercase().contains(&needle),
+    };
     let mut out = Vec::new();
     let mut stack: Vec<NodeId> = tree.get(Tree::ROOT).children.iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
         let n = tree.get(id);
-        if n.name.to_lowercase().contains(&needle) {
+        if matches(&n.name) {
             out.push(id);
             if out.len() >= 5000 {
                 break;
@@ -334,6 +342,8 @@ pub struct App {
     admin_hint: Option<usize>,
     scroll_to: Option<usize>,
     find_open: bool,
+    find_focus: bool,
+    find_stale: bool,
     find_text: String,
     find_hits: Vec<NodeId>,
     find_pos: usize,
@@ -648,6 +658,8 @@ impl App {
             admin_hint: None,
             scroll_to: None,
             find_open: false,
+            find_focus: false,
+            find_stale: false,
             find_text: String::new(),
             find_hits: Vec::new(),
             find_pos: 0,
@@ -939,6 +951,7 @@ impl App {
         self.oldest_cache = None;
         self.cleanup_cache = None;
         self.age_cache = None;
+        self.find_stale = true;
     }
 
     fn rebuild_rows(&mut self) {
@@ -1214,7 +1227,8 @@ impl App {
             }
             Cmd::Find => {
                 self.find_open = !self.find_open;
-                self.find_hits.clear();
+                self.find_focus = self.find_open;
+                self.find_stale = true;
             }
             Cmd::MapRight(r) => {
                 self.settings.map_right = r;
@@ -1819,7 +1833,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(tr("Find in tree"));
             let r = ui.add(egui::TextEdit::singleline(&mut self.find_text).desired_width(220.0).hint_text(tr("Name")));
-            if self.find_hits.is_empty() && self.find_text.is_empty() {
+            if std::mem::take(&mut self.find_focus) {
                 r.request_focus();
             }
             changed = r.changed();
@@ -1844,7 +1858,14 @@ impl App {
             self.find_open = false;
             return;
         }
+        if self.find_stale && !changed {
+            // The tree changed under the hits (scan, delete, rename): recompute and keep the position.
+            self.find_stale = false;
+            self.find_hits = self.loaded.as_ref().map(|l| find_matches(&l.tree, &self.find_text)).unwrap_or_default();
+            self.find_pos = self.find_pos.min(self.find_hits.len().saturating_sub(1));
+        }
         if changed {
+            self.find_stale = false;
             self.find_hits = self.loaded.as_ref().map(|l| find_matches(&l.tree, &self.find_text)).unwrap_or_default();
             self.find_pos = 0;
             step = if self.find_hits.is_empty() { 0 } else { 2 }; // 2 = jump to the first hit
@@ -2368,8 +2389,6 @@ impl App {
         }
     }
 
-    /// Proportional map docked under the tree: shows the selected folder (the scan root when
-    /// nothing, or a file, is selected); clicking a tile selects it in the tree.
     /// Style of the docked / full-size map from the settings; free space only for a drive root.
     fn map_style(&self, root: NodeId) -> views::MapStyle {
         let s = &self.settings;
@@ -2384,6 +2403,8 @@ impl App {
         }
     }
 
+    /// Proportional map docked under (or beside) the tree: shows the selected folder (the scan root
+    /// when nothing, or a file, is selected); clicking a tile selects it in the tree.
     fn map_panel(&mut self, ui: &mut egui::Ui) {
         let Some(l) = &self.loaded else { return };
         let tree = &l.tree;
@@ -2410,9 +2431,7 @@ impl App {
         }
         let line = if hresp.hovered() { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.noninteractive.bg_stroke.color };
         ui.painter().rect_filled(if right { hrect.shrink2(egui::vec2(1.5, 0.0)) } else { hrect.shrink2(egui::vec2(0.0, 1.5)) }, 0.0, line);
-        if right {
-            ui.add_space(0.0);
-        } else {
+        if !right {
             ui.add_space(5.0);
         }
         let margin = egui::Margin { left: if right { 7 } else { 0 }, ..Default::default() };
@@ -2992,6 +3011,31 @@ mod tests {
         assert_eq!(visible_columns(false, false, &[]), [Name, Size, Percent]);
         assert_eq!(visible_columns(true, true, &[Folders, Size]), [Name, Alloc, Percent, Files, Modified]);
         assert_eq!(visible_columns(true, true, &[Name]), [Name, Size, Alloc, Percent, Files, Folders, Modified], "Name cannot be hidden");
+    }
+
+    #[test]
+    fn hide_empty_keeps_live_folders_that_only_hold_files() {
+        // Live snapshots hold directories only: a folder full of files has no child nodes but non-zero counts.
+        let mut t = Tree::placeholder("root");
+        let proto = t.nodes[0].clone();
+        let mut add = |name: &str, files: u64, size: u64| {
+            let mut n = proto.clone();
+            n.name = name.into();
+            n.parent = 0;
+            n.files = files;
+            n.size = size;
+            n.scanning = false;
+            t.nodes.push(n);
+            let id = (t.nodes.len() - 1) as NodeId;
+            t.nodes[0].children.push(id);
+        };
+        add("has_files", 3, 300);
+        add("truly_empty", 0, 0);
+        let names = |hide: bool| -> Vec<String> {
+            build_sib(&t, 0, false, SortCol::Name, false, hide).order.iter().filter_map(|k| if let RowKind::Node(i) = k { Some(t.get(*i).name.clone()) } else { None }).collect()
+        };
+        assert_eq!(names(true), ["has_files"]);
+        assert_eq!(names(false), ["has_files", "truly_empty"]);
     }
 
     #[test]
