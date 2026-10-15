@@ -286,6 +286,16 @@ impl App {
                     });
                 }
                 4 => group(ui, &tr("Options"), |ui| {
+                    let resp = big_button(ui, Icon::Types, &tr("Language"), true, false);
+                    egui::Popup::menu(&resp).show(|ui| {
+                        super::dialogs::language_choices(ui, &mut self.settings.language);
+                    });
+                    let resp = big_button(ui, Icon::Chart, &tr("Style"), true, false);
+                    egui::Popup::menu(&resp).show(|ui| {
+                        ui.selectable_value(&mut self.settings.theme, Theme::Auto, tr("Detect automatically"));
+                        ui.selectable_value(&mut self.settings.theme, Theme::Light, tr("Light"));
+                        ui.selectable_value(&mut self.settings.theme, Theme::Dark, tr("Dark"));
+                    });
                     self.big(ui, &mut out, Cmd::Options, Icon::Options, "Options");
                 }),
                 _ => group(ui, &cap("GrpHelpTitleAction", "Help"), |ui| {
