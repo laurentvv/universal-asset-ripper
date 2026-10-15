@@ -104,6 +104,7 @@ static FR: &[(&str, &str)] = &[
     ("Snapshot no longer available", "Instantané plus disponible"),
     ("earlier scan", "analyse précédente"),
     ("Compare with", "Comparer avec"),
+    ("Folder not found", "Dossier introuvable"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
