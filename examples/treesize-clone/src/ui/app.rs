@@ -2435,7 +2435,9 @@ impl App {
 
     fn delete_window(&mut self, ctx: &egui::Context) {
         if self.confirm_delete.is_none() && self.delete_error.is_none() {
-            if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
+            // Only where the selection is visible: a stale selection from another view must not be deletable blind.
+            let selection_visible = matches!(self.view, ViewKind::Tree | ViewKind::Largest | ViewKind::Oldest | ViewKind::Cleanup);
+            if selection_visible && ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
                 if let Some(id) = self.selected.filter(|&id| id != Tree::ROOT && self.handle.is_none()) {
                     self.confirm_delete = Some(id);
                 }
