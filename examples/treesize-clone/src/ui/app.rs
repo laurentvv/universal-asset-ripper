@@ -381,6 +381,8 @@ pub struct RunOptions {
     pub live: bool,
     pub view: Option<ViewKind>,
     pub lang: Option<String>,
+    /// Ribbon tab to show (0 = File ... 5 = Help), for screenshots.
+    pub tab: Option<usize>,
 }
 
 pub fn parse_view(name: &str) -> Option<ViewKind> {
@@ -415,6 +417,7 @@ pub fn parse_args(args: &[String]) -> Result<RunOptions, String> {
                 o.view = Some(parse_view(v).ok_or_else(|| format!("unknown view '{v}'"))?);
             }
             "--lang" => o.lang = Some(it.next().ok_or("--lang needs a code")?.clone()),
+            "--tab" => o.tab = Some(it.next().ok_or("--tab needs a number 0-5")?.parse().map_err(|_| "--tab needs a number 0-5")?),
             s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
             s => o.start = Some(PathBuf::from(s)),
         }
@@ -603,7 +606,7 @@ impl App {
             col_live: Vec::new(),
             col_changed: Instant::now(),
             files_expanded: HashSet::new(),
-            ribbon_tab: 1,
+            ribbon_tab: opts.tab.unwrap_or(1).min(5),
             disk: None,
             settings: st,
             settings_path,
@@ -1398,6 +1401,12 @@ impl App {
                 cell(ui, 130.0, |ui| {
                     ui.add(egui::Label::new(format!("{} {}", fmt::group_int(files), tr("Files"))).truncate());
                 });
+                if !self.excludes.is_empty() {
+                    let n = self.excludes.len();
+                    cell(ui, 90.0, |ui| {
+                        ui.add(egui::Label::new(format!("{} {}", n, tr("Excluded"))).truncate());
+                    });
+                }
                 cell(ui, 110.0, |ui| {
                     if !l.error_list.is_empty() {
                         let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::hover());

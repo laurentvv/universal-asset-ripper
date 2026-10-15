@@ -45,7 +45,7 @@ const USAGE: &str = "TreeSize Clone in Rust (egui)
 Usage: treesize-clone [PATH]                launch the GUI (PATH is scanned at startup)
        treesize-clone --cli [PATH] [-d N] [--export FILE.csv|json|html] [--changes] [--cleanup]
                                             headless scan: print the tree, export it, show what changed since the last scan, list reclaimable folders
-       treesize-clone --screenshot FILE.png [--view tree|treemap|chart|types|largest|oldest|duplicates]
+       treesize-clone --screenshot FILE.png [--view tree|treemap|chart|types|largest|oldest|duplicates|compare|cleanup|age] [--tab N]
                       [--lang CODE] [PATH]  developer flag: scan PATH, render one frame, save a PNG, exit";
 
 fn main() {

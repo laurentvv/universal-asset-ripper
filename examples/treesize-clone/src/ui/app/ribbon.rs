@@ -138,6 +138,8 @@ impl App {
         ui.add_space(2.0);
         ui.separator();
         let scanning = self.handle.is_some();
+        // Wide tabs scroll sideways instead of being cut off at the window edge.
+        egui::ScrollArea::horizontal().id_salt("ribbon_scroll").auto_shrink([false, true]).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.set_min_height(88.0);
             ui.spacing_mut().item_spacing.x = 4.0;
@@ -188,10 +190,6 @@ impl App {
                         self.big(ui, &mut out, Cmd::NewFolder, Icon::Folder, "New folder");
                     });
                     group(ui, &cap("GrpToolsTitleAction", "Tools"), |ui| {
-                        self.big(ui, &mut out, Cmd::Filter, Icon::Filter, "Filter");
-                        self.big(ui, &mut out, Cmd::ClearFilter, Icon::Exclude, "Clear filter");
-                        self.big(ui, &mut out, Cmd::ToggleHideEmpty, Icon::Folder, "Hide empty folders");
-                        self.big(ui, &mut out, Cmd::Find, Icon::Types, "Find in tree");
                         self.big(ui, &mut out, Cmd::RestartAdmin, Icon::Bolt, "Restart as Administrator");
                         let resp = big_button(ui, Icon::Export, &tr("Export"), self.loaded.is_some() && !scanning, false);
                         egui::Popup::menu(&resp).show(|ui| {
@@ -220,10 +218,16 @@ impl App {
                             self.big(ui, &mut out, Cmd::SetView(v), ic, l);
                         }
                     });
+                    group(ui, &tr("Filter"), |ui| {
+                        self.big(ui, &mut out, Cmd::Filter, Icon::Filter, "Filter");
+                        self.big(ui, &mut out, Cmd::ClearFilter, Icon::Exclude, "Clear filter");
+                        self.big(ui, &mut out, Cmd::ToggleHideEmpty, Icon::Folder, "Hide empty folders");
+                        self.big(ui, &mut out, Cmd::Find, Icon::Types, "Find in tree");
+                    });
                     group(ui, &tr("History"), |ui| {
-                        self.big(ui, &mut out, Cmd::SetView(ViewKind::Compare), Icon::Oldest, "Changes since last scan");
-                        self.big(ui, &mut out, Cmd::SnapshotCompare, Icon::Open, "Compare with snapshot...");
-                        self.big(ui, &mut out, Cmd::SnapshotSave, Icon::Export, "Save snapshot...");
+                        self.big(ui, &mut out, Cmd::SetView(ViewKind::Compare), Icon::Oldest, "Changes");
+                        self.big(ui, &mut out, Cmd::SnapshotCompare, Icon::Open, "Compare...");
+                        self.big(ui, &mut out, Cmd::SnapshotSave, Icon::Export, "Snapshot...");
                     });
                     group(ui, &tr("Scan"), |ui| {
                         if big_button(ui, Icon::Bolt, &tr("Fast NTFS scan (admin)"), !scanning, self.fast_ntfs).clicked() {
@@ -288,6 +292,7 @@ impl App {
                     self.big(ui, &mut out, Cmd::About, Icon::About, "About");
                 }),
             }
+        });
         });
         out
     }
