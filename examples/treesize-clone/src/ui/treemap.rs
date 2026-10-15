@@ -417,3 +417,22 @@ mod tests {
         assert!(pie_angles(&[0, 0]).iter().all(|(s, e)| s == e));
     }
 }
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// Manual benchmark: `cargo test --release -- --ignored map_layout_on_a_real_drive --nocapture`.
+    #[test]
+    #[ignore]
+    fn map_layout_on_a_real_drive() {
+        let tree = crate::scan::scan_simple(std::path::Path::new(r"C:\")).tree;
+        let area = Rect::new(0.0, 0.0, 1200.0, 500.0);
+        for unique in [false, true] {
+            let o = NestOpts { max_depth: 4, unique_files: unique, max_tiles: 4000, ..NestOpts::default() };
+            let t0 = std::time::Instant::now();
+            let tiles = nested_with(&tree, Tree::ROOT, area, &o);
+            eprintln!("unique_files={unique}: {} tiles in {:?}", tiles.len(), t0.elapsed());
+        }
+    }
+}
