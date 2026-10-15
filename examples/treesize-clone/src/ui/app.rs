@@ -471,6 +471,7 @@ pub fn run(opts: RunOptions) -> eframe::Result<()> {
             let mut app = App::new(&cc.egui_ctx, st, &opts);
             if let Some(p) = &opts.start {
                 let cleaned = PathBuf::from(scan::model::clean_path_input(&p.to_string_lossy()));
+                let cleaned = scan::model::normalize_root(&cleaned);
                 let abs = std::path::absolute(&cleaned).unwrap_or(cleaned);
                 app.path_text = abs.to_string_lossy().into_owned();
                 app.start_scan();
