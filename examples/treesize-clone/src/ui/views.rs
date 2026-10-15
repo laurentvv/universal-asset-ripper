@@ -384,10 +384,14 @@ pub fn file_list_view(ui: &mut egui::Ui, rows: &[RankedRow], salt: &str, selecte
 }
 
 /// "Changes since an older scan": folders ranked by absolute size change. Returns a path to open.
-pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis::snapshot::DirDelta])>, notice: &str, root: Option<&str>) -> Option<String> {
+pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis::snapshot::DirDelta])>, history: &[crate::analysis::snapshot::HistoryPoint], notice: &str, root: Option<&str>) -> Option<String> {
     use crate::analysis::snapshot::ChangeKind;
     if !notice.is_empty() {
         ui.label(notice);
+    }
+    if history.len() > 1 {
+        size_history_chart(ui, history);
+        ui.add_space(6.0);
     }
     let Some((label, taken, changes)) = cmp else {
         ui.label(tr("No earlier scan of this folder to compare with yet. Scan it again later, or use Compare with snapshot."));
@@ -410,7 +414,7 @@ pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis
         .column(Column::initial(100.0).at_least(60.0))
         .column(Column::remainder().at_least(100.0))
         .header(22.0, |mut h| {
-            for t in ["Change", "Path", "Before", "After", "Difference"] {
+            for t in ["Trend", "Path", "Before", "After", "Difference"] {
                 h.col(|ui| {
                     ui.label(RichText::new(tr(t)).strong());
                 });
@@ -533,5 +537,34 @@ pub fn age_view(ui: &mut egui::Ui, buckets: &[crate::analysis::insights::AgeBuck
             ui.add_sized([60.0, 22.0], egui::Label::new(format!("{:.1} %", b.size as f64 * 100.0 / total as f64)));
             ui.label(format!("{} {}", crate::fmt::group_int(b.files), tr("Files")));
         });
+    }
+}
+
+/// Total size of the scanned folder at each recorded scan (newest on the right), as bars.
+fn size_history_chart(ui: &mut egui::Ui, points: &[crate::analysis::snapshot::HistoryPoint]) {
+    let pts = &points[points.len().saturating_sub(40)..];
+    let max = pts.iter().map(|p| p.size).max().unwrap_or(1).max(1);
+    let min = pts.iter().map(|p| p.size).min().unwrap_or(0);
+    ui.label(RichText::new(tr("Size over time")).strong());
+    let (resp, painter) = ui.allocate_painter(egui::vec2(ui.available_width().min(900.0), 90.0), Sense::hover());
+    let area = resp.rect;
+    painter.rect_filled(area, 2.0, ui.visuals().extreme_bg_color);
+    let slot = area.width() / pts.len() as f32;
+    // Bars start at 60 % of the smallest value so small drifts stay visible.
+    let floor = (min as f64 * 0.6) as u64;
+    let span = (max - floor).max(1) as f64;
+    let hover = resp.hover_pos();
+    let mut tip = None;
+    for (i, p) in pts.iter().enumerate() {
+        let h = ((p.size - floor) as f64 / span) as f32 * (area.height() - 8.0);
+        let r = egui::Rect::from_min_max(egui::pos2(area.min.x + i as f32 * slot + 1.0, area.max.y - h - 2.0), egui::pos2(area.min.x + (i + 1) as f32 * slot - 1.0, area.max.y - 2.0));
+        let latest = i + 1 == pts.len();
+        painter.rect_filled(r, 1.0, if latest { Color32::from_rgb(110, 130, 240) } else { Color32::from_rgb(70, 88, 190) });
+        if hover.is_some_and(|h| h.x >= r.min.x - 1.0 && h.x <= r.max.x + 1.0) {
+            tip = Some(*p);
+        }
+    }
+    if let Some(p) = tip {
+        resp.on_hover_text_at_pointer(format!("{}\n{} - {} {}", format_time(p.taken), format_bytes(p.size), crate::fmt::group_int(p.files), tr("Files")));
     }
 }

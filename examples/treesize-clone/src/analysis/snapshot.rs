@@ -157,6 +157,37 @@ pub fn prune_history(dir: &Path, root: &str, keep: usize) {
     }
 }
 
+/// One point of the size-over-time history of a root (kept in a small index next to the snapshots,
+/// so drawing the history never has to parse the big snapshot files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryPoint {
+    pub taken: i64,
+    pub size: u64,
+    pub alloc: u64,
+    pub files: u64,
+}
+
+fn index_file(dir: &Path, root: &str) -> PathBuf {
+    dir.join(format!("{}__index.json", root_key(root)))
+}
+
+/// Sizes of every recorded scan of `root`, oldest first.
+pub fn history_points(dir: &Path, root: &str) -> Vec<HistoryPoint> {
+    std::fs::read(index_file(dir, root)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn append_point(dir: &Path, root: &str, p: HistoryPoint) {
+    let mut v = history_points(dir, root);
+    v.retain(|x| x.taken != p.taken);
+    v.push(p);
+    v.sort_by_key(|x| x.taken);
+    let excess = v.len().saturating_sub(500);
+    v.drain(..excess);
+    if let Ok(json) = serde_json::to_vec(&v) {
+        let _ = std::fs::write(index_file(dir, root), json);
+    }
+}
+
 /// Compare `tree` with the newest stored snapshot of its root (if any), then store `tree` as a
 /// new snapshot and keep the history to 20 files. Returns the old snapshot time and the changes.
 pub fn record_and_compare(dir: &Path, tree: &Tree, now: i64) -> Option<(i64, Vec<DirDelta>)> {
@@ -166,6 +197,8 @@ pub fn record_and_compare(dir: &Path, tree: &Tree, now: i64) -> Option<(i64, Vec
     let result = previous.map(|old| (old.taken, diff(&old, &new)));
     if new.save(&history_file(dir, &root, now)).is_ok() {
         prune_history(dir, &root, 20);
+        let r = tree.get(Tree::ROOT);
+        append_point(dir, &root, HistoryPoint { taken: now, size: r.size, alloc: r.alloc, files: r.files });
     }
     result
 }
@@ -236,6 +269,22 @@ mod tests {
         // A third identical scan reports no change.
         let t3 = scan_simple(data.path()).tree;
         assert!(record_and_compare(hist.path(), &t3, 300).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn size_history_grows_with_each_recorded_scan() {
+        let data = tempfile::tempdir().unwrap();
+        let hist = tempfile::tempdir().unwrap();
+        write(&data.path().join("a.bin"), 100);
+        let root = scan_simple(data.path()).tree;
+        let name = root.get(Tree::ROOT).name.clone();
+        assert!(history_points(hist.path(), &name).is_empty());
+        record_and_compare(hist.path(), &root, 10);
+        write(&data.path().join("b.bin"), 900);
+        record_and_compare(hist.path(), &scan_simple(data.path()).tree, 20);
+        record_and_compare(hist.path(), &scan_simple(data.path()).tree, 20); // same instant: replaced, not duplicated
+        let pts = history_points(hist.path(), &name);
+        assert_eq!(pts.iter().map(|p| (p.taken, p.size, p.files)).collect::<Vec<_>>(), [(10, 100, 1), (20, 1000, 2)]);
     }
 
     #[test]
