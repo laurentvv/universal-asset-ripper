@@ -151,6 +151,22 @@ mod tests {
     }
 
     #[test]
+    fn paths_beyond_max_path_are_scanned() {
+        let d = tempfile::tempdir().unwrap();
+        let mut deep = d.path().to_path_buf();
+        for _ in 0..30 {
+            deep.push("abcdefghi"); // 30 x 10 chars: well past the 260 limit of legacy Win32 paths
+        }
+        write(&deep.join("deep.bin"), 1234);
+        assert!(deep.as_os_str().len() > 280);
+        let res = scan_simple(d.path());
+        let root = res.tree.get(Tree::ROOT);
+        assert_eq!((root.files, root.size), (1, 1234));
+        assert_eq!(root.dirs, 30);
+        assert!(res.errors.is_empty(), "{:?}", res.errors.len());
+    }
+
+    #[test]
     fn volume_root_is_the_drive() {
         if cfg!(windows) {
             assert_eq!(volume_root(std::path::Path::new("C:\\Windows\\System32")), PathBuf::from("C:\\"));

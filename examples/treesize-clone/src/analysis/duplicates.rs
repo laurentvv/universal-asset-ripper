@@ -124,6 +124,53 @@ pub fn find_duplicates(
     find_duplicates_in(size_candidates(tree, root, min_size), cancel, done)
 }
 
+/// Every copy except one per group (the one with the shortest path, then the alphabetically first),
+/// i.e. what "keep a single copy" would delete.
+pub fn extras_to_delete(groups: &[DupGroup]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for g in groups {
+        let keep = g.paths.iter().min_by(|a, b| a.as_os_str().len().cmp(&b.as_os_str().len()).then_with(|| a.cmp(b)));
+        out.extend(g.paths.iter().filter(|p| Some(*p) != keep).cloned());
+    }
+    out
+}
+
+/// Forget deleted paths; groups left with fewer than two copies disappear.
+pub fn remove_paths(groups: &mut Vec<DupGroup>, removed: &std::collections::HashSet<PathBuf>) {
+    for g in groups.iter_mut() {
+        g.paths.retain(|p| !removed.contains(p));
+    }
+    groups.retain(|g| g.paths.len() > 1);
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    fn g(size: u64, paths: &[&str]) -> DupGroup {
+        DupGroup { size, paths: paths.iter().map(PathBuf::from).collect() }
+    }
+
+    #[test]
+    fn extras_keep_the_shortest_path_of_each_group() {
+        let groups = vec![g(10, &["C:\\a\\long\\copy.bin", "C:\\a\\x.bin", "C:\\a\\y.bin"]), g(5, &["C:\\p.txt", "C:\\q.txt"])];
+        let extras = extras_to_delete(&groups);
+        // Shortest kept; equal lengths: the alphabetically first one is kept.
+        assert_eq!(extras, [PathBuf::from(r"C:\a\long\copy.bin"), PathBuf::from(r"C:\a\y.bin"), PathBuf::from(r"C:\q.txt")]);
+        assert_eq!(extras.len(), 3);
+        assert!(!extras.contains(&PathBuf::from("C:\\a\\x.bin")) && !extras.contains(&PathBuf::from("C:\\p.txt")));
+    }
+
+    #[test]
+    fn removing_paths_drops_groups_that_are_no_longer_duplicates() {
+        let mut groups = vec![g(10, &["a", "b", "c"]), g(5, &["p", "q"])];
+        let removed: std::collections::HashSet<PathBuf> = ["b", "p"].iter().map(PathBuf::from).collect();
+        remove_paths(&mut groups, &removed);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].paths, [PathBuf::from("a"), PathBuf::from("c")]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

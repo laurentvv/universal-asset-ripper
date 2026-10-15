@@ -271,6 +271,8 @@ pub struct App {
     props: Option<NodeId>,
     confirm_delete: Option<NodeId>,
     name_dialog: Option<NameDialog>,
+    /// Files waiting for confirmation before going to the Recycle Bin (duplicate clean-up).
+    confirm_files: Option<Vec<(PathBuf, u64)>>,
     comparison: Option<Comparison>,
     scroll_to: Option<usize>,
     compare_notice: String,
@@ -553,6 +555,7 @@ impl App {
             props: None,
             confirm_delete: None,
             name_dialog: None,
+            confirm_files: None,
             comparison: None,
             scroll_to: None,
             compare_notice: String::new(),
@@ -1758,6 +1761,10 @@ impl App {
         let wasted: u64 = groups.iter().map(|g| g.wasted()).sum();
         ui.label(RichText::new(format!("{} {}, {} {}", groups.len(), tr("duplicate groups"), format_bytes(wasted), tr("wasted"))).strong());
         let mut open = None;
+        let mut delete: Option<Vec<(PathBuf, u64)>> = None;
+        if ui.button(tr("Keep one copy of each, delete the rest")).clicked() {
+            delete = Some(groups.iter().flat_map(|g| duplicates::extras_to_delete(std::slice::from_ref(g)).into_iter().map(|p| (p, g.size))).collect());
+        }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for (gi, g) in groups.iter().take(2000).enumerate() {
                 egui::CollapsingHeader::new(format!(
@@ -1775,6 +1782,9 @@ impl App {
                             if ui.small_button(tr("Open")).clicked() {
                                 open = Some(p.clone());
                             }
+                            if ui.small_button(tr("Delete")).clicked() {
+                                delete = Some(vec![(p.clone(), g.size)]);
+                            }
                             ui.label(p.display().to_string());
                         });
                     }
@@ -1783,6 +1793,9 @@ impl App {
         });
         if let Some(p) = open {
             open_in_explorer(&p);
+        }
+        if let Some(d) = delete.filter(|d| !d.is_empty()) {
+            self.confirm_files = Some(d);
         }
     }
 
@@ -2131,6 +2144,51 @@ impl App {
         }
     }
 
+    /// Confirmation (and execution) of a batch of file deletions from the duplicate finder.
+    fn files_delete_window(&mut self, ctx: &egui::Context) {
+        let Some(files) = self.confirm_files.clone() else { return };
+        let total: u64 = files.iter().map(|(_, s)| *s).sum();
+        let (mut yes, mut no) = (false, false);
+        egui::Window::new(tr("Delete (Recycle Bin)")).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(format!("{} {} - {}", files.len(), tr("Files"), format_bytes(total)));
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                for (p, _) in files.iter().take(200) {
+                    ui.label(p.display().to_string());
+                }
+                if files.len() > 200 {
+                    ui.weak(format!("... +{}", files.len() - 200));
+                }
+            });
+            ui.horizontal(|ui| {
+                yes = ui.button(tr("Delete")).clicked();
+                no = ui.button(tr("Cancel")).clicked();
+            });
+        });
+        if no {
+            self.confirm_files = None;
+        } else if yes {
+            self.confirm_files = None;
+            let mut removed = HashSet::new();
+            let mut failed = 0usize;
+            for (p, _) in &files {
+                match crate::trash::recycle(p) {
+                    Ok(()) => {
+                        removed.insert(p.clone());
+                    }
+                    Err(_) => failed += 1,
+                }
+            }
+            if let Some(groups) = &mut self.dup_result {
+                duplicates::remove_paths(groups, &removed);
+            }
+            self.notice = if failed == 0 {
+                format!("{} {} - {}", removed.len(), tr("Files"), tr("Rescan to refresh the tree."))
+            } else {
+                format!("{} / {} {}", failed, files.len(), tr("could not be deleted"))
+            };
+        }
+    }
+
     /// Rename / New folder prompt.
     fn name_window(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.name_dialog.take() else { return };
@@ -2253,6 +2311,7 @@ impl App {
         self.options_window(ctx);
         self.delete_window(ctx);
         self.name_window(ctx);
+        self.files_delete_window(ctx);
         self.about_window(ctx);
         if let (Some(id), Some(l)) = (self.props, &self.loaded) {
             let mut open = true;
