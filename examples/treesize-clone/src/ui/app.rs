@@ -1806,10 +1806,10 @@ impl App {
                 step = if ui.input(|i| i.modifiers.shift) { -1 } else { 1 };
                 r.request_focus();
             }
-            if ui.small_button("\u{25B2}").clicked() {
+            if ui.small_button("<").clicked() {
                 step = -1;
             }
-            if ui.small_button("\u{25BC}").clicked() {
+            if ui.small_button(">").clicked() {
                 step = 1;
             }
             if !self.find_text.is_empty() {
