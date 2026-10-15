@@ -96,6 +96,7 @@ static FR: &[(&str, &str)] = &[
     ("on disk", "sur disque"),
     ("partial", "partiel"),
     ("text or *.jpg", "texte ou *.jpg"),
+    ("free", "libres"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
