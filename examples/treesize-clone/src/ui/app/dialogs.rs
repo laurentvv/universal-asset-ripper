@@ -18,6 +18,23 @@ fn units_label(u: Units) -> String {
     }
 }
 
+/// The selectable languages (system default, English, every catalogue), shared by the Options
+/// dialog and the ribbon.
+pub(super) fn language_choices(ui: &mut egui::Ui, current: &mut String) {
+    let cur = current.clone();
+    if ui.selectable_label(cur == "auto", language_label("auto")).clicked() {
+        *current = "auto".into();
+    }
+    if ui.selectable_label(cur == "en", "English (en)").clicked() {
+        *current = "en".into();
+    }
+    for l in i18n::LOCALES {
+        if ui.selectable_label(cur.eq_ignore_ascii_case(l.code), format!("{} ({})", l.name, l.code)).clicked() {
+            *current = l.code.to_string();
+        }
+    }
+}
+
 /// Text of the language combo for the current setting.
 fn language_label(setting: &str) -> String {
     if setting.eq_ignore_ascii_case("auto") || setting.is_empty() {
@@ -39,18 +56,7 @@ impl App {
             egui::Grid::new("options_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label(tr("Language"));
                 egui::ComboBox::from_id_salt("lang").width(260.0).selected_text(language_label(&self.settings.language)).show_ui(ui, |ui| {
-                    let cur = self.settings.language.clone();
-                    if ui.selectable_label(cur == "auto", language_label("auto")).clicked() {
-                        self.settings.language = "auto".into();
-                    }
-                    if ui.selectable_label(cur == "en", "English (en)").clicked() {
-                        self.settings.language = "en".into();
-                    }
-                    for l in i18n::LOCALES {
-                        if ui.selectable_label(cur.eq_ignore_ascii_case(l.code), format!("{} ({})", l.name, l.code)).clicked() {
-                            self.settings.language = l.code.to_string();
-                        }
-                    }
+                    language_choices(ui, &mut self.settings.language);
                 });
                 ui.end_row();
 
