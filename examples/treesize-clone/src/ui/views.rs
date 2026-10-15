@@ -369,6 +369,8 @@ pub fn types_view(ui: &mut egui::Ui, stats: &[TypeStat]) {
 pub fn file_list_view(ui: &mut egui::Ui, rows: &[RankedRow], salt: &str, selected: Option<NodeId>) -> Option<ListEvent> {
     let mut ev = None;
     ui.push_id(salt, |ui| {
+        // Selectable labels would swallow the click that selects the row.
+        ui.style_mut().interaction.selectable_labels = false;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -456,6 +458,7 @@ pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis
     let mut open = None;
     let root = root.unwrap_or("");
     let (up, down) = if ui.visuals().dark_mode { (Color32::from_rgb(255, 120, 110), Color32::from_rgb(110, 210, 120)) } else { (Color32::from_rgb(190, 40, 30), Color32::from_rgb(20, 130, 40)) };
+    ui.style_mut().interaction.selectable_labels = false; // so a row can be double-clicked
     TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
@@ -527,6 +530,8 @@ pub struct CleanRow {
 pub fn cleanup_list(ui: &mut egui::Ui, rows: &[CleanRow], selected: Option<NodeId>) -> Option<ListEvent> {
     let mut ev = None;
     ui.push_id("cleanup", |ui| {
+        // Selectable labels would swallow the click that selects the row.
+        ui.style_mut().interaction.selectable_labels = false;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)

@@ -2213,6 +2213,10 @@ impl App {
 
     /// Handle what a ranked / clean-up list reported (selection, open, right-click menu).
     fn list_event(&mut self, ctx: &egui::Context, ev: Option<ListEvent>) {
+        if ev.is_some() {
+            // The state changes after this frame was drawn: draw once more so the selection shows at once.
+            ctx.request_repaint();
+        }
         match ev {
             Some(ListEvent::Select(id)) => self.selected = Some(id),
             Some(ListEvent::Reveal(id)) => self.reveal_in_tree(id),
