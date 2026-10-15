@@ -8,6 +8,7 @@ mod dfm;
 mod export;
 mod fmt;
 mod i18n;
+mod i18n_fr;
 mod scan;
 mod settings;
 mod shell;

@@ -199,7 +199,6 @@ pub fn set_language(code: &str) -> String {
     eff
 }
 
-#[cfg(test)]
 pub fn current_language() -> String {
     CURRENT_CODE.read().map(|g| if g.is_empty() { "en".into() } else { g.clone() }).unwrap_or_else(|_| "en".into())
 }
@@ -212,7 +211,9 @@ fn with_catalog<R>(f: impl FnOnce(&Catalog) -> Option<R>) -> Option<R> {
 /// Translate a plain English label; unknown labels (and the English language) return the input
 /// without accelerators.
 pub fn tr(s: &str) -> String {
-    with_catalog(|c| c.get_exact(s).or_else(|| c.get_text(s))).unwrap_or_else(|| strip_accel(s))
+    with_catalog(|c| c.get_exact(s).or_else(|| c.get_text(s)))
+        .or_else(|| if current_language().starts_with("fr") { crate::i18n_fr::lookup(s).map(str::to_string) } else { None })
+        .unwrap_or_else(|| strip_accel(s))
 }
 
 /// Translate with a catalogue context (`TMainForm.RefreshAction.Caption`), falling back to `tr`.

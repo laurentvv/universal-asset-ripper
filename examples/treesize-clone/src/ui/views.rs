@@ -410,3 +410,78 @@ pub fn signed_bytes(d: i64) -> String {
         std::cmp::Ordering::Equal => format_bytes(0),
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanRow {
+    pub id: NodeId,
+    pub kind: String,
+    pub path: String,
+    pub size: u64,
+}
+
+/// Table of clean-up candidates; single click selects, double click opens in Explorer.
+pub fn cleanup_list(ui: &mut egui::Ui, rows: &[CleanRow], selected: Option<NodeId>) -> Option<ListEvent> {
+    let mut ev = None;
+    ui.push_id("cleanup", |ui| {
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .sense(Sense::click())
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::initial(190.0).at_least(80.0).clip(true))
+            .column(Column::initial(520.0).at_least(120.0).clip(true))
+            .column(Column::remainder().at_least(80.0))
+            .header(22.0, |mut h| {
+                for t in ["Category", "Path", "Size"] {
+                    h.col(|ui| {
+                        ui.label(RichText::new(tr(t)).strong());
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(20.0, rows.len(), |mut row| {
+                    let r = &rows[row.index()];
+                    row.set_selected(selected == Some(r.id));
+                    row.col(|ui| {
+                        ui.label(&r.kind);
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(r.path.as_str()).truncate());
+                    });
+                    row.col(|ui| {
+                        ui.label(format_bytes(r.size));
+                    });
+                    let resp = row.response();
+                    if resp.double_clicked() {
+                        ev = Some(ListEvent::Open(r.id));
+                    } else if resp.clicked() {
+                        ev = Some(ListEvent::Select(r.id));
+                    }
+                });
+            });
+    });
+    ev
+}
+
+/// Size per last-modified age, drawn as horizontal bars.
+pub fn age_view(ui: &mut egui::Ui, buckets: &[crate::analysis::insights::AgeBucket]) {
+    let total: u64 = buckets.iter().map(|b| b.size).sum::<u64>().max(1);
+    let max = buckets.iter().map(|b| b.size).max().unwrap_or(1).max(1);
+    ui.label(RichText::new(tr("Size by last modification")).strong());
+    ui.add_space(6.0);
+    let bar_col = Color32::from_rgb(90, 110, 220);
+    for b in buckets {
+        ui.horizontal(|ui| {
+            ui.add_sized([170.0, 22.0], egui::Label::new(tr(b.label)));
+            let w = (ui.available_width() - 330.0).max(60.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+            let mut fill = rect;
+            fill.set_width(rect.width() * b.size as f32 / max as f32);
+            ui.painter().rect_filled(fill, 0.0, bar_col);
+            ui.add_sized([90.0, 22.0], egui::Label::new(format_bytes(b.size)));
+            ui.add_sized([60.0, 22.0], egui::Label::new(format!("{:.1} %", b.size as f64 * 100.0 / total as f64)));
+            ui.label(format!("{} {}", crate::fmt::group_int(b.files), tr("Files")));
+        });
+    }
+}

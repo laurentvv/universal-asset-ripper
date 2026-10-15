@@ -8,6 +8,7 @@ use super::paint::{self, Icon};
 use super::views::{self, ListEvent};
 use crate::analysis::duplicates::{self, DupGroup};
 use crate::analysis::filter::{self, Filter};
+use crate::analysis::insights::{self, AgeBucket};
 use crate::analysis::snapshot::{self, DirDelta, Snapshot};
 use crate::analysis::types::{self, TypeStat};
 use crate::dfm::{self, Item};
@@ -237,6 +238,8 @@ pub struct App {
     types_cache: Option<Vec<TypeStat>>,
     largest_cache: Option<Vec<views::RankedRow>>,
     oldest_cache: Option<Vec<views::RankedRow>>,
+    cleanup_cache: Option<Vec<views::CleanRow>>,
+    age_cache: Option<Vec<AgeBucket>>,
     dup_run: Option<DupRun>,
     dup_result: Option<Vec<DupGroup>>,
     dup_min: String,
@@ -324,6 +327,8 @@ pub fn parse_view(name: &str) -> Option<ViewKind> {
         "oldest" => ViewKind::Oldest,
         "duplicates" => ViewKind::Duplicates,
         "compare" => ViewKind::Compare,
+        "cleanup" => ViewKind::Cleanup,
+        "age" => ViewKind::Age,
         _ => return None,
     })
 }
@@ -528,6 +533,8 @@ impl App {
             types_cache: None,
             largest_cache: None,
             oldest_cache: None,
+            cleanup_cache: None,
+            age_cache: None,
             dup_run: None,
             dup_result: None,
             dup_min: "64KB".into(),
@@ -805,6 +812,8 @@ impl App {
         self.types_cache = None;
         self.largest_cache = None;
         self.oldest_cache = None;
+        self.cleanup_cache = None;
+        self.age_cache = None;
     }
 
     fn rebuild_rows(&mut self) {
@@ -1778,6 +1787,10 @@ impl App {
     }
 
     fn central(&mut self, ui: &mut egui::Ui) {
+        if matches!(self.view, ViewKind::Cleanup | ViewKind::Age) {
+            self.insight_view(ui);
+            return;
+        }
         if self.view == ViewKind::Compare {
             let open = views::compare_view(ui, self.comparison.as_ref().map(|c| (c.label.as_str(), c.taken, c.changes.as_slice())), &self.compare_notice, self.loaded.as_ref().map(|l| l.tree.get(Tree::ROOT).name.as_str()));
             if let Some(p) = open {
@@ -1832,7 +1845,7 @@ impl App {
             ViewKind::Oldest => {
                 ev = views::file_list_view(ui, self.oldest_cache.as_deref().unwrap_or(&[]), "oldest", self.selected)
             }
-            ViewKind::Tree | ViewKind::Duplicates | ViewKind::Compare => {}
+            ViewKind::Tree | ViewKind::Duplicates | ViewKind::Compare | ViewKind::Cleanup | ViewKind::Age => {}
         }
         match ev {
             Some(ListEvent::Select(id)) => self.selected = Some(id),
@@ -2067,6 +2080,54 @@ impl App {
                 }
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Clean-up and File age views (computed from the finished tree, cached until it changes).
+    fn insight_view(&mut self, ui: &mut egui::Ui) {
+        let Some(l) = &self.loaded else {
+            ui.label(tr("Scan a folder first."));
+            return;
+        };
+        if l.tree.live.is_some() {
+            ui.label(tr("Available when the scan has finished."));
+            return;
+        }
+        if self.view == ViewKind::Age {
+            if self.age_cache.is_none() {
+                self.age_cache = Some(insights::age_buckets(&l.tree, chrono::Utc::now().timestamp()));
+            }
+            views::age_view(ui, self.age_cache.as_deref().unwrap_or(&[]));
+            return;
+        }
+        if self.cleanup_cache.is_none() {
+            let tree = &l.tree;
+            let mut rows: Vec<views::CleanRow> = insights::reclaimable(tree)
+                .into_iter()
+                .map(|r| views::CleanRow { id: r.id, kind: tr(r.kind), path: tree.path_of(r.id).to_string_lossy().into_owned(), size: r.size })
+                .collect();
+            let empty = tr("Empty folder");
+            rows.extend(insights::empty_dirs(tree).into_iter().map(|id| views::CleanRow { id, kind: empty.clone(), path: tree.path_of(id).to_string_lossy().into_owned(), size: 0 }));
+            self.cleanup_cache = Some(rows);
+        }
+        let rows = self.cleanup_cache.clone().unwrap_or_default();
+        let total: u64 = rows.iter().map(|r| r.size).sum();
+        ui.label(RichText::new(format!("{}: {} ({} {})", tr("Can be reclaimed"), format_bytes(total), rows.len(), tr("folders"))).strong());
+        ui.horizontal(|ui| {
+            let sel = self.selected.filter(|s| rows.iter().any(|r| r.id == *s));
+            if ui.add_enabled(sel.is_some(), egui::Button::new(tr("Delete (Recycle Bin)"))).clicked() {
+                self.confirm_delete = sel;
+            }
+            ui.weak(tr("Select a folder, then delete it. Nothing is removed without confirmation."));
+        });
+        match views::cleanup_list(ui, &rows, self.selected) {
+            Some(ListEvent::Select(id)) => self.selected = Some(id),
+            Some(ListEvent::Open(id)) => {
+                if let Some(l) = &self.loaded {
+                    open_in_explorer(&l.tree.path_of(id));
+                }
+            }
+            _ => {}
         }
     }
 
