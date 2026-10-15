@@ -131,6 +131,8 @@ static FR: &[(&str, &str)] = &[
     ("items selected", "éléments sélectionnés"),
     ("Open in Explorer", "Ouvrir dans l'Explorateur"),
     ("Copy path", "Copier le chemin"),
+    ("Analyze with TreeSize", "Analyser avec TreeSize"),
+    ("Show in the Explorer context menu", "Afficher dans le menu contextuel de l'Explorateur"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),

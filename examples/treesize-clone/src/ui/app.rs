@@ -379,6 +379,8 @@ pub struct App {
     admin_hint: Option<usize>,
     scroll_to: Option<usize>,
     find_open: bool,
+    /// Explorer context-menu entry installed? (read lazily when Options opens)
+    explorer_menu: Option<bool>,
     /// Rows picked with Ctrl+click / Shift+click (the single `selected` row stays the primary one).
     multi: HashSet<NodeId>,
     confirm_multi: Option<Vec<NodeId>>,
@@ -698,6 +700,7 @@ impl App {
             admin_hint: None,
             scroll_to: None,
             find_open: false,
+            explorer_menu: None,
             multi: HashSet::new(),
             confirm_multi: None,
             find_focus: false,

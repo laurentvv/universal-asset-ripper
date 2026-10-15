@@ -89,6 +89,7 @@ cargo test
 - **Change history**: baseline picker (any earlier scan) and a size-over-time chart in the Changes view; scan index in `%APPDATA%/treesize-clone/snapshots`.
 - Developer flag `--tab N` (0 File ... 5 Help) selects the ribbon tab for screenshots; `docs/screenshots/ribbon_view.png` shows the View tab.
 - **Multi-selection** in the tree: Ctrl+click toggles, Shift+click selects a range; the context menu (or Delete) then copies the paths, excludes or sends all selected rows to the Recycle Bin after one confirmation (rows below another selected folder are skipped). Export writes the selected folder.
+- **Explorer context menu** entry "Analyze with TreeSize" (folders, folder backgrounds, drives) toggled from Options; written under `HKCU\Software\Classes` only, removed when unticked (`src/shell_ext.rs`, round trip tested against the real registry).
 - Measured on this machine: `C:\` (3.75 M files, 655 k folders) scans in about 24 s (peak working set about 1.25 GB); long paths beyond MAX_PATH are scanned.
 
 ## Derived from the extracted assets vs written from scratch
