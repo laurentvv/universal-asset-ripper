@@ -95,6 +95,7 @@ impl App {
 
                 ui.label(tr("Scan"));
                 ui.checkbox(&mut self.fast_ntfs, tr("Fast NTFS scan (admin)"));
+                ui.checkbox(&mut self.settings.always_admin, tr("Always start as administrator"));
                 ui.end_row();
             });
             ui.separator();

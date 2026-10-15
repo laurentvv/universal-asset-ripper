@@ -130,6 +130,8 @@ pub struct Settings {
     pub decimals: u8,
     /// Hide folders that hold nothing at all.
     pub hide_empty: bool,
+    /// Relaunch elevated at start-up (UAC prompt) so protected folders can be read.
+    pub always_admin: bool,
     /// Proportional map docked under the tree (like the original).
     pub show_map: bool,
     /// Height of the docked map panel in points (0 = automatic).
@@ -169,6 +171,7 @@ impl Default for Settings {
             hidden_cols: Vec::new(),
             decimals: 1,
             hide_empty: false,
+            always_admin: false,
             show_map: true,
             map_height: 0.0,
             map_right: false,
@@ -252,6 +255,7 @@ mod tests {
             hidden_cols: vec![SortKey::Folders],
             decimals: 2,
             hide_empty: true,
+            always_admin: true,
             show_map: false,
             map_height: 0.0,
             map_right: true,
