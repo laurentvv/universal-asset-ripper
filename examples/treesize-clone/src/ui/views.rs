@@ -335,3 +335,78 @@ pub fn file_list_view(ui: &mut egui::Ui, rows: &[RankedRow], salt: &str, selecte
     });
     ev
 }
+
+/// "Changes since an older scan": folders ranked by absolute size change. Returns a path to open.
+pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis::snapshot::DirDelta])>, notice: &str, root: Option<&str>) -> Option<String> {
+    use crate::analysis::snapshot::ChangeKind;
+    if !notice.is_empty() {
+        ui.label(notice);
+    }
+    let Some((label, taken, changes)) = cmp else {
+        ui.label(tr("No earlier scan of this folder to compare with yet. Scan it again later, or use Compare with snapshot."));
+        return None;
+    };
+    let grown: i64 = changes.iter().filter(|c| c.path.is_empty()).map(|c| c.delta()).sum();
+    ui.label(RichText::new(format!("{} {} ({}): {} {} - {}", tr("Compared with"), label, format_time(taken), changes.len(), tr("changed folders"), signed_bytes(grown))).strong());
+    ui.add_space(4.0);
+    let mut open = None;
+    let root = root.unwrap_or("");
+    let (up, down) = if ui.visuals().dark_mode { (Color32::from_rgb(255, 120, 110), Color32::from_rgb(110, 210, 120)) } else { (Color32::from_rgb(190, 40, 30), Color32::from_rgb(20, 130, 40)) };
+    TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .sense(Sense::click())
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .column(Column::initial(70.0).at_least(50.0))
+        .column(Column::initial(460.0).at_least(120.0).clip(true))
+        .column(Column::initial(100.0).at_least(60.0))
+        .column(Column::initial(100.0).at_least(60.0))
+        .column(Column::remainder().at_least(100.0))
+        .header(22.0, |mut h| {
+            for t in ["Change", "Path", "Before", "After", "Difference"] {
+                h.col(|ui| {
+                    ui.label(RichText::new(tr(t)).strong());
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(20.0, changes.len().min(2000), |mut row| {
+                let c = &changes[row.index()];
+                let (kind, col) = match c.kind {
+                    ChangeKind::Added => ("new", up),
+                    ChangeKind::Removed => ("deleted", down),
+                    ChangeKind::Changed => (if c.delta() >= 0 { "grew" } else { "shrank" }, if c.delta() >= 0 { up } else { down }),
+                };
+                row.col(|ui| {
+                    ui.label(RichText::new(tr(kind)).color(col));
+                });
+                row.col(|ui| {
+                    let p = if c.path.is_empty() { root.to_string() } else { c.path.replace('/', "\\") };
+                    ui.add(egui::Label::new(p).truncate());
+                });
+                row.col(|ui| {
+                    ui.label(format_bytes(c.old_size));
+                });
+                row.col(|ui| {
+                    ui.label(format_bytes(c.new_size));
+                });
+                row.col(|ui| {
+                    ui.label(RichText::new(signed_bytes(c.delta())).color(col));
+                });
+                if row.response().double_clicked() && c.kind != ChangeKind::Removed {
+                    let rel = c.path.replace('/', "\\");
+                    open = Some(if rel.is_empty() { root.to_string() } else { format!("{}\\{}", root.trim_end_matches('\\'), rel) });
+                }
+            });
+        });
+    open
+}
+
+/// `+1,5 Go` / `-300 Ko` / `0 Octets`.
+pub fn signed_bytes(d: i64) -> String {
+    match d.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("+{}", format_bytes(d as u64)),
+        std::cmp::Ordering::Less => format!("-{}", format_bytes(d.unsigned_abs())),
+        std::cmp::Ordering::Equal => format_bytes(0),
+    }
+}

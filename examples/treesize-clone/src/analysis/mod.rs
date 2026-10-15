@@ -2,4 +2,5 @@
 
 pub mod duplicates;
 pub mod filter;
+pub mod snapshot;
 pub mod types;
