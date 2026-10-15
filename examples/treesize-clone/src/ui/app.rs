@@ -618,6 +618,10 @@ impl App {
         if let Some(h) = &self.handle {
             h.cancel();
         }
+        // A folder re-scan in flight belongs to the tree that is about to be replaced.
+        if let Some((_, h)) = self.sub_scan.take() {
+            h.cancel();
+        }
         let root = normalize_root(std::path::Path::new(&scan::model::clean_path_input(&self.path_text)));
         if !root.is_dir() {
             // Do not replace the current results by an empty tree for a typo.
