@@ -126,6 +126,8 @@ pub struct Settings {
     pub window: Option<WindowGeom>,
     /// Tree column widths by column (the last, flexible column is not stored).
     pub col_widths: Vec<(SortKey, f32)>,
+    /// Most recently scanned roots, newest first.
+    pub recent: Vec<String>,
 }
 
 impl Default for Settings {
@@ -145,8 +147,17 @@ impl Default for Settings {
             theme: Theme::Auto,
             window: None,
             col_widths: Vec::new(),
+            recent: Vec::new(),
         }
     }
+}
+
+/// Put `path` first in the recent list (case-insensitive de-duplication, at most `max` entries).
+pub fn push_recent(list: &mut Vec<String>, path: &str, max: usize) {
+    let key = |s: &str| s.trim_end_matches(['\\', '/']).to_lowercase();
+    list.retain(|p| key(p) != key(path));
+    list.insert(0, path.to_string());
+    list.truncate(max);
 }
 
 /// `%APPDATA%\treesize-clone` on Windows, `$XDG_CONFIG_HOME` or `~/.config` elsewhere.
@@ -206,6 +217,7 @@ mod tests {
             size_mode: SizeMode::Allocated,
             theme: Theme::Dark,
             window: Some(WindowGeom { w: 900.0, h: 600.0, x: Some(10.0), y: None }),
+            recent: vec![r"C:\Data".into(), r"D:\x".into()],
             col_widths: vec![(SortKey::Name, 321.0), (SortKey::Size, 77.5)],
         };
         save_to(&p, &s).unwrap();
@@ -234,6 +246,15 @@ mod tests {
         assert!(Theme::Auto.is_dark(true) && !Theme::Auto.is_dark(false));
         assert!(Theme::Dark.is_dark(false) && !Theme::Light.is_dark(true));
         let _ = system_dark(); // must not panic whatever the registry holds
+    }
+
+    #[test]
+    fn recent_list_dedups_and_caps() {
+        let mut v = vec![];
+        for p in ["C:\\a", "C:\\b", "c:\\A\\", "C:\\c"] {
+            push_recent(&mut v, p, 3);
+        }
+        assert_eq!(v, ["C:\\c", "c:\\A\\", "C:\\b"]);
     }
 
     #[test]
