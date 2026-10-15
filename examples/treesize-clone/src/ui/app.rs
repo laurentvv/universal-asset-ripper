@@ -118,6 +118,42 @@ fn of_word() -> String {
     if t == "of" && fmt::loc() == fmt::Loc::Fr { "sur".into() } else { t }
 }
 
+#[derive(Clone, Copy)]
+enum NavKey {
+    Up,
+    Down,
+    Left,
+    Right,
+    Toggle,
+    First,
+    Last,
+    PageUp,
+    PageDown,
+}
+
+/// Row to select after moving `delta` rows from `cur` (rows without a node are skipped; the move
+/// stops at the ends instead of wrapping).
+fn nav_target(ids: &[Option<NodeId>], cur: Option<usize>, delta: i32) -> Option<usize> {
+    let step = delta.signum();
+    let mut i = match cur {
+        Some(c) => c as i64,
+        None => if step > 0 { -1 } else { ids.len() as i64 },
+    };
+    let mut remaining = delta.unsigned_abs();
+    let mut last_ok = None;
+    while remaining > 0 {
+        i += step as i64;
+        if i < 0 || i >= ids.len() as i64 {
+            break;
+        }
+        if ids[i as usize].is_some() {
+            last_ok = Some(i as usize);
+            remaining -= 1;
+        }
+    }
+    last_ok
+}
+
 fn expandable(tree: &Tree, id: NodeId) -> bool {
     let n = tree.get(id);
     n.is_dir && (!n.children.is_empty() || (tree.live.is_some() && tree.direct_files(id).count > 0))
@@ -233,6 +269,7 @@ pub struct App {
     confirm_delete: Option<NodeId>,
     name_dialog: Option<NameDialog>,
     comparison: Option<Comparison>,
+    scroll_to: Option<usize>,
     compare_notice: String,
     /// Background re-scan of one folder: its name path (stable across tree edits) and the scan.
     sub_scan: Option<(Vec<String>, ScanHandle)>,
@@ -510,6 +547,7 @@ impl App {
             confirm_delete: None,
             name_dialog: None,
             comparison: None,
+            scroll_to: None,
             compare_notice: String::new(),
             sub_scan: None,
             delete_error: None,
@@ -544,6 +582,7 @@ impl App {
         self.status = format!("{} {} ...", tr("Scanning"), root.display());
         self.notice.clear();
         self.settings.last_path = root.to_string_lossy().into_owned();
+        settings::push_recent(&mut self.settings.recent, &self.settings.last_path.clone(), 10);
         self.partial_seen = false;
         self.scan_started = Instant::now();
         self.scan_total = scan::drive_used_bytes(&root);
@@ -1117,6 +1156,16 @@ impl App {
                         self.start_scan();
                     }
                 }
+                if !self.settings.recent.is_empty() {
+                    ui.separator();
+                    ui.weak(tr("Recent"));
+                }
+                for r in self.settings.recent.clone() {
+                    if ui.selectable_label(false, &r).clicked() {
+                        self.path_text = r;
+                        self.start_scan();
+                    }
+                }
             });
             if ui.add_enabled(!scanning, egui::Button::new(tr("Scan"))).clicked() {
                 self.start_scan();
@@ -1339,6 +1388,9 @@ impl App {
             .resizable(true)
             .sense(Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+        if let Some(row) = self.scroll_to.take() {
+            table = table.scroll_to_row(row, None);
+        }
         for (i, c) in cols.iter().enumerate() {
             let default = match c {
                 SortCol::Name => 400.0,
@@ -1844,12 +1896,17 @@ impl App {
         }
         let mut cmds: Vec<Cmd> = Vec::new();
         let mut copy = false;
+        let mut nav: Option<NavKey> = None;
         ctx.input_mut(|i| {
+            if self.view == ViewKind::Tree && self.loaded.is_some() {
+                for (k, n) in [(egui::Key::ArrowDown, NavKey::Down), (egui::Key::ArrowUp, NavKey::Up), (egui::Key::ArrowRight, NavKey::Right), (egui::Key::ArrowLeft, NavKey::Left), (egui::Key::Enter, NavKey::Toggle), (egui::Key::Home, NavKey::First), (egui::Key::End, NavKey::Last), (egui::Key::PageDown, NavKey::PageDown), (egui::Key::PageUp, NavKey::PageUp)] {
+                    if i.consume_key(egui::Modifiers::NONE, k) {
+                        nav = Some(n);
+                    }
+                }
+            }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::F5) {
                 cmds.push(Cmd::Refresh);
-            }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) {
-                cmds.push(Cmd::ExcludeSelected);
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace) {
                 cmds.push(Cmd::ParentFolder);
@@ -1864,6 +1921,9 @@ impl App {
                 }
             }
         });
+        if let Some(k) = nav {
+            self.navigate(k);
+        }
         if copy {
             if let (Some(id), Some(l)) = (self.selected, &self.loaded) {
                 ctx.copy_text(l.tree.path_of(id).to_string_lossy().into_owned());
@@ -1873,6 +1933,65 @@ impl App {
             if self.cmd_enabled(c) {
                 self.run_cmd(ctx, c);
             }
+        }
+    }
+
+    /// Dropping a folder (or a file: its folder) on the window scans it.
+    fn handle_drop(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.iter().find_map(|f| Some(f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty())));
+        let Some(p) = dropped else { return };
+        if self.handle.is_some() {
+            return;
+        }
+        let dir = if p.is_dir() { p } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) };
+        self.path_text = dir.to_string_lossy().into_owned();
+        self.start_scan();
+    }
+
+    /// Keyboard navigation of the tree rows (arrows, Home/End, Page keys, Enter).
+    fn navigate(&mut self, key: NavKey) {
+        let Some(l) = &self.loaded else { return };
+        let ids: Vec<Option<NodeId>> = self.rows.iter().map(|r| if let RowKind::Node(i) = r.kind { Some(i) } else { None }).collect();
+        let cur = self.selected.and_then(|s| ids.iter().position(|&i| i == Some(s)));
+        let sel = self.selected;
+        let is_open = |id: NodeId| self.expanded.contains(&id);
+        let target = match key {
+            NavKey::Down => nav_target(&ids, cur, 1),
+            NavKey::Up => nav_target(&ids, cur, -1),
+            NavKey::PageDown => nav_target(&ids, cur, 15),
+            NavKey::PageUp => nav_target(&ids, cur, -15),
+            NavKey::First => nav_target(&ids, None, 1),
+            NavKey::Last => nav_target(&ids, Some(ids.len()), -1),
+            NavKey::Right => match sel {
+                Some(id) if expandable(&l.tree, id) && !is_open(id) => {
+                    self.expanded.insert(id);
+                    self.rows_dirty = true;
+                    None
+                }
+                _ => nav_target(&ids, cur, 1),
+            },
+            NavKey::Left => match sel {
+                Some(id) if is_open(id) && id != Tree::ROOT => {
+                    self.expanded.remove(&id);
+                    self.rows_dirty = true;
+                    None
+                }
+                Some(id) if l.tree.get(id).parent != NONE => ids.iter().position(|&i| i == Some(l.tree.get(id).parent)),
+                _ => None,
+            },
+            NavKey::Toggle => {
+                if let Some(id) = sel.filter(|&id| expandable(&l.tree, id) && id != Tree::ROOT) {
+                    if !self.expanded.remove(&id) {
+                        self.expanded.insert(id);
+                    }
+                    self.rows_dirty = true;
+                }
+                None
+            }
+        };
+        if let Some(t) = target {
+            self.selected = ids[t];
+            self.scroll_to = Some(t);
         }
     }
 
@@ -2201,6 +2320,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         self.handle_keys(&ctx);
+        self.handle_drop(&ctx);
         let mut cmd = None;
         egui::Panel::top("toolbar").show(ui, |ui| {
             cmd = cmd.or(self.ribbon(ui));
@@ -2272,6 +2392,18 @@ mod tests {
         // A minimised window reports -32000: keep the size, drop the position.
         let off = sanitize_geom(WindowGeom { x: Some(-32000.0), ..g }, min).unwrap();
         assert_eq!((off.x, off.y, off.w), (None, None, 900.0));
+    }
+
+    #[test]
+    fn nav_target_skips_pseudo_rows_and_stops_at_the_ends() {
+        let ids = [Some(1), None, Some(3), Some(4), None];
+        assert_eq!(nav_target(&ids, Some(0), 1), Some(2), "skips the Files row");
+        assert_eq!(nav_target(&ids, Some(3), 1), None, "no wrap at the end");
+        assert_eq!(nav_target(&ids, Some(2), -1), Some(0));
+        assert_eq!(nav_target(&ids, None, 1), Some(0), "nothing selected: first row");
+        assert_eq!(nav_target(&ids, Some(ids.len()), -1), Some(3), "End");
+        assert_eq!(nav_target(&ids, Some(0), 15), Some(3), "page moves clamp to the last node");
+        assert_eq!(nav_target(&[], None, 1), None);
     }
 
     #[test]

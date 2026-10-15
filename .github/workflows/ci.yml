@@ -24,3 +24,23 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  rust:
+    name: treesize-clone / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: examples/treesize-clone
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/treesize-clone
+      # Windows is the primary target; some Windows-only code is dead on Linux, so lint there only.
+      - run: cargo clippy --all-targets -- -D warnings
+        if: runner.os == 'Windows'
+      - run: cargo test
