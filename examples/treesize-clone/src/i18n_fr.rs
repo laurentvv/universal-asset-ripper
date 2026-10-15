@@ -70,6 +70,32 @@ static FR: &[(&str, &str)] = &[
     ("duplicate groups", "groupes de doublons"),
     ("files hashed", "fichiers traités"),
     ("wasted", "gaspillés"),
+    ("Applied at the next scan.", "Appliqué à la prochaine analyse."),
+    ("Based on the layout of", "Inspiré de la présentation de"),
+    ("Excluded folders", "Dossiers exclus"),
+    ("Expand all", "Tout développer"),
+    ("Export failed", "Échec de l'exportation"),
+    ("Exported", "Exporté"),
+    ("Fast NTFS scan (admin)", "Analyse NTFS rapide (admin)"),
+    ("Light", "Clair"),
+    ("Max", "Max"),
+    ("Min", "Min"),
+    ("Nothing to show", "Rien à afficher"),
+    ("Path to scan", "Chemin à analyser"),
+    ("Pick a drive or type a path, then press Scan.", "Choisissez un lecteur ou saisissez un chemin, puis lancez l'analyse."),
+    ("Ready", "Prêt"),
+    ("Remove", "Retirer"),
+    ("Scan a folder first.", "Analysez d'abord un dossier."),
+    ("Scan cancelled", "Analyse annulée"),
+    ("Scan complete", "Analyse terminée"),
+    ("Scan errors", "Erreurs d'analyse"),
+    ("Scanning", "Analyse en cours"),
+    ("Types", "Types"),
+    ("Views", "Affichages"),
+    ("of", "de"),
+    ("on disk", "sur disque"),
+    ("partial", "partiel"),
+    ("text or *.jpg", "texte ou *.jpg"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
@@ -96,5 +122,35 @@ mod tests {
     fn lookup_ignores_accelerators() {
         assert_eq!(lookup("&Rename"), Some("Renommer"));
         assert_eq!(lookup("nope"), None);
+    }
+}
+
+#[cfg(test)]
+mod audit {
+    /// Every `tr("literal")` of the sources must be known to the French catalogue or to `FR`.
+    #[test]
+    fn all_literal_labels_have_french() {
+        let mut missing = std::collections::BTreeSet::new();
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    let mut rest = text.as_str();
+                    while let Some(i) = rest.find("tr(\"") {
+                        rest = &rest[i + 4..];
+                        let Some(j) = rest.find('"') else { break };
+                        let lit = &rest[..j];
+                        if !lit.is_empty() && !matches!(lit, "%%" | "Totally invented label 42" | "literal") && !lit.contains('\\') && !crate::i18n::is_translated("fr", lit) && super::lookup(lit).is_none() {
+                            missing.insert(lit.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "no French for: {missing:#?}");
     }
 }
