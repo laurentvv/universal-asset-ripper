@@ -14,6 +14,7 @@ fn units_label(u: Units) -> String {
         Units::KB => tr("Values in KB"),
         Units::MB => tr("Values in MB"),
         Units::GB => tr("Values in GB"),
+        Units::TB => tr("Values in TB"),
     }
 }
 
@@ -57,6 +58,14 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     for u in Units::ALL {
                         ui.selectable_value(&mut self.settings.units, u, units_label(u));
+                    }
+                });
+                ui.end_row();
+
+                ui.label(tr("Decimals"));
+                ui.horizontal(|ui| {
+                    for n in 0..=3u8 {
+                        ui.selectable_value(&mut self.settings.decimals, n, n.to_string());
                     }
                 });
                 ui.end_row();

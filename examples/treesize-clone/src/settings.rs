@@ -39,10 +39,11 @@ pub enum Units {
     KB,
     MB,
     GB,
+    TB,
 }
 
 impl Units {
-    pub const ALL: [Units; 5] = [Units::Auto, Units::Bytes, Units::KB, Units::MB, Units::GB];
+    pub const ALL: [Units; 6] = [Units::Auto, Units::Bytes, Units::KB, Units::MB, Units::GB, Units::TB];
 
     pub fn to_u8(self) -> u8 {
         self as u8
@@ -123,6 +124,12 @@ pub struct Settings {
     pub show_allocated: bool,
     /// Show the Files / Folders / Last Modified columns.
     pub details: bool,
+    /// Columns the user switched off in "Configure columns" (Name is always shown).
+    pub hidden_cols: Vec<SortKey>,
+    /// Decimals shown for sizes (0..=3).
+    pub decimals: u8,
+    /// Hide folders that hold nothing at all.
+    pub hide_empty: bool,
     /// Proportional map docked under the tree (like the original).
     pub show_map: bool,
     /// Height of the docked map panel in points (0 = automatic).
@@ -159,6 +166,9 @@ impl Default for Settings {
             units: Units::Auto,
             show_allocated: true,
             details: true,
+            hidden_cols: Vec::new(),
+            decimals: 1,
+            hide_empty: false,
             show_map: true,
             map_height: 0.0,
             map_right: false,
@@ -239,6 +249,9 @@ mod tests {
             units: Units::MB,
             show_allocated: false,
             details: false,
+            hidden_cols: vec![SortKey::Folders],
+            decimals: 2,
+            hide_empty: true,
             show_map: false,
             map_height: 0.0,
             map_right: true,

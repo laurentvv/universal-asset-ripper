@@ -93,11 +93,15 @@ fn key_cmp(sort: SortCol, desc: bool, a: &Key, b: &Key) -> std::cmp::Ordering {
 
 /// Children of `id` as tree lines: sub-folders, then one aggregated Files line (unless a filter is
 /// active, which lists matching files individually).
-fn build_sib(tree: &Tree, id: NodeId, filtering: bool, sort: SortCol, desc: bool) -> Sib {
+fn build_sib(tree: &Tree, id: NodeId, filtering: bool, sort: SortCol, desc: bool, hide_empty: bool) -> Sib {
     let files = if filtering { DirectFiles::default() } else { tree.direct_files(id) };
     let mut items: Vec<(RowKind, Key)> = Vec::new();
     for &c in &tree.get(id).children {
-        if filtering || tree.get(c).is_dir {
+        let n = tree.get(c);
+        if hide_empty && n.is_dir && n.children.is_empty() && !n.scanning {
+            continue;
+        }
+        if filtering || n.is_dir {
             let k = RowKind::Node(c);
             items.push((k, row_key(tree, k, &files)));
         }
@@ -158,6 +162,42 @@ fn nav_target(ids: &[Option<NodeId>], cur: Option<usize>, delta: i32) -> Option<
 /// Scan errors caused by "access denied" (Win32 error 5; the message text itself is localised).
 fn access_denied_count(errors: &[scan::ScanError]) -> usize {
     errors.iter().filter(|e| e.message.contains("(os error 5)")).count()
+}
+
+/// Columns of the tree table, left to right: the Options flags and the hidden set combined.
+fn visible_columns(show_allocated: bool, details: bool, hidden: &[SortCol]) -> Vec<SortCol> {
+    let mut cols = vec![SortCol::Name, SortCol::Size];
+    if show_allocated {
+        cols.push(SortCol::Alloc);
+    }
+    cols.push(SortCol::Percent);
+    if details {
+        cols.extend([SortCol::Files, SortCol::Folders, SortCol::Modified]);
+    }
+    cols.retain(|c| *c == SortCol::Name || !hidden.contains(c));
+    cols
+}
+
+/// Nodes (folders and files) whose name contains `needle`, case-insensitively, in tree order
+/// (capped; the scan root itself is not a match).
+fn find_matches(tree: &Tree, needle: &str) -> Vec<NodeId> {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() || tree.nodes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut stack: Vec<NodeId> = tree.get(Tree::ROOT).children.iter().rev().copied().collect();
+    while let Some(id) = stack.pop() {
+        let n = tree.get(id);
+        if n.name.to_lowercase().contains(&needle) {
+            out.push(id);
+            if out.len() >= 5000 {
+                break;
+            }
+        }
+        stack.extend(n.children.iter().rev().copied());
+    }
+    out
 }
 
 fn expandable(tree: &Tree, id: NodeId) -> bool {
@@ -287,6 +327,10 @@ pub struct App {
     /// Number of folders refused with "access denied" in the last scan (offers an elevated restart).
     admin_hint: Option<usize>,
     scroll_to: Option<usize>,
+    find_open: bool,
+    find_text: String,
+    find_hits: Vec<NodeId>,
+    find_pos: usize,
     /// Node to scroll to once the tree rows have been rebuilt ("Show in tree").
     reveal: Option<NodeId>,
     compare_notice: String,
@@ -526,6 +570,7 @@ impl App {
         assets::install_language_fonts(ctx, &eff);
         fmt::set_locale(&eff);
         scan::set_units(st.units);
+        fmt::set_decimals(st.decimals);
         let system_dark = settings::system_dark();
         let dark = st.theme.is_dark(system_dark);
         ctx.set_visuals(visuals_for(dark));
@@ -587,6 +632,10 @@ impl App {
             size_history: Vec::new(),
             admin_hint: None,
             scroll_to: None,
+            find_open: false,
+            find_text: String::new(),
+            find_hits: Vec::new(),
+            find_pos: 0,
             reveal: None,
             compare_notice: String::new(),
             sub_scan: None,
@@ -889,6 +938,7 @@ impl App {
         let fset = self.filter_set.as_ref();
         let filtering = fset.is_some();
         let (sort, desc) = (self.sort, self.desc);
+        let hide_empty = self.settings.hide_empty;
         if !tree.nodes.is_empty() {
             let mut stack = vec![Row { kind: RowKind::Node(Tree::ROOT), depth: 0, bold: false, files: DirectFiles::default() }];
             while let Some(row) = stack.pop() {
@@ -898,7 +948,7 @@ impl App {
                         if !(tree.get(id).is_dir && (filtering || self.expanded.contains(&id))) {
                             continue;
                         }
-                        let sib = self.sorted.entry(id).or_insert_with(|| build_sib(tree, id, filtering, sort, desc));
+                        let sib = self.sorted.entry(id).or_insert_with(|| build_sib(tree, id, filtering, sort, desc, hide_empty));
                         for &c in sib.order.iter().rev() {
                             let (keep, files) = match c {
                                 RowKind::Node(x) => (fset.is_none_or(|s| s.contains(&x)), DirectFiles::default()),
@@ -1070,6 +1120,7 @@ impl App {
             Cmd::RestartAdmin => cfg!(windows) && !scan::mft::is_elevated(),
             Cmd::NewFolder => loaded && !scanning && self.sub_scan.is_none(),
             Cmd::SnapshotSave | Cmd::SnapshotCompare => loaded && !scanning,
+            Cmd::Find | Cmd::ClearFilter | Cmd::ToggleHideEmpty => loaded,
             Cmd::OpenLocation | Cmd::ExpandLevel(_) | Cmd::ExpandFull => loaded,
             Cmd::ExcludeSelected => self.selected.is_some_and(|s| s != Tree::ROOT) && loaded,
             _ => true,
@@ -1082,6 +1133,8 @@ impl App {
             Cmd::SetUnits(u) => self.settings.units == u,
             Cmd::ToggleDetails => self.settings.details,
             Cmd::ToggleMap => self.settings.show_map,
+            Cmd::ToggleHideEmpty => self.settings.hide_empty,
+            Cmd::Find => self.find_open,
             Cmd::MapRight(r) => self.settings.map_right == r,
             Cmd::Filter => self.show_filters,
             Cmd::SetView(v) => self.view == v,
@@ -1136,6 +1189,18 @@ impl App {
             Cmd::SetUnits(u) => self.settings.units = u,
             Cmd::ToggleDetails => self.settings.details = !self.settings.details,
             Cmd::ToggleMap => self.settings.show_map = !self.settings.show_map,
+            Cmd::ToggleHideEmpty => {
+                self.settings.hide_empty = !self.settings.hide_empty;
+                self.invalidate();
+            }
+            Cmd::ClearFilter => {
+                self.filter_in = FilterInputs::default();
+                self.apply_filter_inputs();
+            }
+            Cmd::Find => {
+                self.find_open = !self.find_open;
+                self.find_hits.clear();
+            }
             Cmd::MapRight(r) => {
                 self.settings.map_right = r;
                 self.settings.show_map = true;
@@ -1383,15 +1448,29 @@ impl App {
     }
 
     fn tree_columns(&self) -> Vec<SortCol> {
-        let mut cols = vec![SortCol::Name, SortCol::Size];
-        if self.settings.show_allocated {
-            cols.push(SortCol::Alloc);
+        visible_columns(self.settings.show_allocated, self.settings.details, &self.settings.hidden_cols)
+    }
+
+    /// Is the column on screen (Options flags and the "Configure columns" choices combined)?
+    fn column_visible(&self, c: SortCol) -> bool {
+        self.tree_columns().contains(&c)
+    }
+
+    /// "Configure columns": show or hide one column (re-enabling also lifts the Options flag).
+    fn toggle_column(&mut self, c: SortCol) {
+        if c == SortCol::Name {
+            return;
         }
-        cols.push(SortCol::Percent);
-        if self.settings.details {
-            cols.extend([SortCol::Files, SortCol::Folders, SortCol::Modified]);
+        if self.column_visible(c) {
+            self.settings.hidden_cols.push(c);
+        } else {
+            self.settings.hidden_cols.retain(|h| *h != c);
+            match c {
+                SortCol::Alloc => self.settings.show_allocated = true,
+                SortCol::Files | SortCol::Folders | SortCol::Modified => self.settings.details = true,
+                _ => {}
+            }
         }
-        cols
     }
 
     fn tree_table(&mut self, ui: &mut egui::Ui) {
@@ -1711,6 +1790,56 @@ impl App {
         }
     }
 
+    /// "Find in tree": jump between nodes whose name contains the text (case-insensitive).
+    fn find_bar(&mut self, ui: &mut egui::Ui) {
+        let mut step: i32 = 0;
+        let mut changed = false;
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.label(tr("Find in tree"));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.find_text).desired_width(220.0).hint_text(tr("Name")));
+            if self.find_hits.is_empty() && self.find_text.is_empty() {
+                r.request_focus();
+            }
+            changed = r.changed();
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                step = if ui.input(|i| i.modifiers.shift) { -1 } else { 1 };
+                r.request_focus();
+            }
+            if ui.small_button("\u{25B2}").clicked() {
+                step = -1;
+            }
+            if ui.small_button("\u{25BC}").clicked() {
+                step = 1;
+            }
+            if !self.find_text.is_empty() {
+                ui.label(if self.find_hits.is_empty() { tr("No match") } else { format!("{} / {}", self.find_pos + 1, self.find_hits.len()) });
+            }
+            if ui.small_button("x").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+        });
+        if close {
+            self.find_open = false;
+            return;
+        }
+        if changed {
+            self.find_hits = self.loaded.as_ref().map(|l| find_matches(&l.tree, &self.find_text)).unwrap_or_default();
+            self.find_pos = 0;
+            step = if self.find_hits.is_empty() { 0 } else { 2 }; // 2 = jump to the first hit
+        }
+        if step != 0 && !self.find_hits.is_empty() {
+            let n = self.find_hits.len();
+            self.find_pos = match step {
+                2 => 0,
+                1 => (self.find_pos + 1) % n,
+                _ => (self.find_pos + n - 1) % n,
+            };
+            let id = self.find_hits[self.find_pos];
+            self.reveal_in_tree(id);
+        }
+    }
+
     fn filter_bar(&mut self, ui: &mut egui::Ui) {
         let mut apply = false;
         let mut clear = false;
@@ -2011,6 +2140,7 @@ impl App {
             self.dark_applied = Some(dark);
         }
         scan::set_units(self.settings.units);
+        fmt::set_decimals(self.settings.decimals);
     }
 
     /// Keyboard shortcuts: F5 refresh, Ctrl+C copy path, Delete exclude, Backspace up, Ctrl+F filters,
@@ -2037,7 +2167,7 @@ impl App {
                 cmds.push(Cmd::ParentFolder);
             }
             if i.consume_key(egui::Modifiers::COMMAND, egui::Key::F) {
-                cmds.push(Cmd::Filter);
+                cmds.push(Cmd::Find);
             }
             copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::C);
             for (sc, c) in &self.shortcuts {
@@ -2720,6 +2850,9 @@ impl eframe::App for App {
             if self.show_filters {
                 self.filter_bar(ui);
             }
+            if self.find_open {
+                self.find_bar(ui);
+            }
             ui.add_space(4.0);
         });
         egui::Panel::bottom("status").show(ui, |ui| {
@@ -2824,6 +2957,30 @@ mod tests {
     }
 
     #[test]
+    fn column_visibility_combines_flags_and_hidden_set() {
+        use SortCol::*;
+        assert_eq!(visible_columns(true, true, &[]), [Name, Size, Alloc, Percent, Files, Folders, Modified]);
+        assert_eq!(visible_columns(false, false, &[]), [Name, Size, Percent]);
+        assert_eq!(visible_columns(true, true, &[Folders, Size]), [Name, Alloc, Percent, Files, Modified]);
+        assert_eq!(visible_columns(true, true, &[Name]), [Name, Size, Alloc, Percent, Files, Folders, Modified], "Name cannot be hidden");
+    }
+
+    #[test]
+    fn find_matches_names_in_tree_order() {
+        let d = tempfile::tempdir().unwrap();
+        for p in ["alpha/Report.txt", "alpha/notes.txt", "beta/report_old/x.bin", "gamma/y.bin"] {
+            let path = d.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        let t = scan::scan_simple(d.path()).tree;
+        let names = |q: &str| find_matches(&t, q).iter().map(|&i| t.get(i).name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("report"), ["Report.txt", "report_old"]);
+        assert_eq!(names("  NOTES "), ["notes.txt"]);
+        assert!(names("zzz").is_empty() && names("").is_empty());
+    }
+
+    #[test]
     fn file_names_are_validated() {
         assert!(valid_file_name("new folder") && valid_file_name("a.b"));
         for bad in ["", ".", "..", "a/b", "a\\b", "x:y", "q?", "a|b"] {
@@ -2884,14 +3041,14 @@ mod tests {
             ],
             ..Default::default()
         };
-        let sib = build_sib(&t, 0, false, SortCol::Size, true);
+        let sib = build_sib(&t, 0, false, SortCol::Size, true, false);
         assert_eq!(sib.order, vec![RowKind::Node(1), RowKind::Files(0)], "files collapse into one pseudo-row");
         assert_eq!((sib.files.count, sib.files.size, sib.files.modified), (2, 130, 9));
         assert_eq!(sib.top, vec![RowKind::Node(1), RowKind::Files(0)]);
-        let by_name = build_sib(&t, 0, false, SortCol::Name, false);
+        let by_name = build_sib(&t, 0, false, SortCol::Name, false, false);
         assert_eq!(by_name.order[0], RowKind::Files(0), "[2 Files] sorts before 'big'");
         // filtering lists the files individually
-        let f = build_sib(&t, 0, true, SortCol::Size, true);
+        let f = build_sib(&t, 0, true, SortCol::Size, true, false);
         assert_eq!(f.order, vec![RowKind::Node(1), RowKind::Node(2), RowKind::Node(3)]);
         assert_eq!(files_label_with("[%d Files]", 30), "[30 Files]");
         assert!(expandable(&t, 0) && !expandable(&t, 2));
