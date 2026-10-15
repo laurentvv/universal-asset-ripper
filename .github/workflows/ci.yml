@@ -44,3 +44,13 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
         if: runner.os == 'Windows'
       - run: cargo test
+      - name: Build release binary
+        if: runner.os == 'Windows'
+        run: cargo build --release
+      - name: Upload treesize-clone.exe
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: treesize-clone-windows-x64
+          path: examples/treesize-clone/target/release/treesize-clone.exe
+          if-no-files-found: error
