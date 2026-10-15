@@ -151,6 +151,21 @@ mod tests {
     }
 
     #[test]
+    fn unicode_and_spaced_names_are_kept() {
+        let d = tempfile::tempdir().unwrap();
+        for name in ["dossier é à", "日本語 フォルダ", "emoji 😀"] {
+            write(&d.path().join(name).join("fichier ü.txt"), 10);
+        }
+        let res = scan_simple(d.path());
+        let root = res.tree.get(Tree::ROOT);
+        assert_eq!((root.files, root.dirs, root.size), (3, 3, 30));
+        let mut names: Vec<&str> = root.children.iter().map(|&c| res.tree.get(c).name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["dossier é à", "emoji 😀", "日本語 フォルダ"]);
+        assert!(res.errors.is_empty());
+    }
+
+    #[test]
     fn paths_beyond_max_path_are_scanned() {
         let d = tempfile::tempdir().unwrap();
         let mut deep = d.path().to_path_buf();

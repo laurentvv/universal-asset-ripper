@@ -124,7 +124,7 @@ pub fn run(args: &[String]) {
     let target = opts.target.clone();
     let max_depth = opts.max_depth;
     let canon = std::fs::canonicalize(&target).unwrap_or(target);
-    let canon = PathBuf::from(canon.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+    let canon = PathBuf::from(crate::scan::model::strip_verbatim(&canon.to_string_lossy()));
     let abs = normalize_root(&canon);
     println!("\n  {} - {}", "TreeSize Rust Clone".bold().yellow(), "CLI mode".white());
     println!("  Target: {}\n", abs.display().to_string().cyan());
