@@ -7,7 +7,7 @@ description = "Fast multi-threaded TreeSize clone in Rust using extracted assets
 [dependencies]
 rayon = "1.10"
 colored = "2.1"
-eframe = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 image = { version = "0.25.10", default-features = false, features = ["ico", "bmp", "png"] }
 crossbeam-channel = "0.5.17"
 egui_extras = "0.36.2"
