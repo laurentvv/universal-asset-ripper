@@ -278,6 +278,7 @@ pub struct App {
     /// Files waiting for confirmation before going to the Recycle Bin (duplicate clean-up).
     confirm_files: Option<Vec<(PathBuf, u64)>>,
     comparison: Option<Comparison>,
+    size_history: Vec<snapshot::HistoryPoint>,
     scroll_to: Option<usize>,
     /// Node to scroll to once the tree rows have been rebuilt ("Show in tree").
     reveal: Option<NodeId>,
@@ -574,6 +575,7 @@ impl App {
             name_dialog: None,
             confirm_files: None,
             comparison: None,
+            size_history: Vec::new(),
             scroll_to: None,
             reveal: None,
             compare_notice: String::new(),
@@ -775,6 +777,7 @@ impl App {
         let Some(dir) = snapshot::history_dir() else { return };
         self.comparison = snapshot::record_and_compare(&dir, &l.tree, chrono::Utc::now().timestamp())
             .map(|(taken, changes)| Comparison { label: tr("last scan"), taken, changes });
+        self.size_history = snapshot::history_points(&dir, &l.tree.get(Tree::ROOT).name);
     }
 
     fn save_snapshot_dialog(&mut self) {
@@ -1827,7 +1830,7 @@ impl App {
             return;
         }
         if self.view == ViewKind::Compare {
-            let open = views::compare_view(ui, self.comparison.as_ref().map(|c| (c.label.as_str(), c.taken, c.changes.as_slice())), &self.compare_notice, self.loaded.as_ref().map(|l| l.tree.get(Tree::ROOT).name.as_str()));
+            let open = views::compare_view(ui, self.comparison.as_ref().map(|c| (c.label.as_str(), c.taken, c.changes.as_slice())), &self.size_history, &self.compare_notice, self.loaded.as_ref().map(|l| l.tree.get(Tree::ROOT).name.as_str()));
             if let Some(p) = open {
                 open_in_explorer(std::path::Path::new(&p));
             }
