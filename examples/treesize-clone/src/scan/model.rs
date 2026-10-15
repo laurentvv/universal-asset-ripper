@@ -258,6 +258,18 @@ pub fn remap_ids(old: &Tree, new: &Tree, ids: &HashSet<NodeId>) -> HashSet<NodeI
         .collect()
 }
 
+/// Turn the verbatim form returned by `fs::canonicalize` back into a normal Win32 path:
+/// `\\?\C:\x` becomes `C:\x` and `\\?\UNC\server\share\x` becomes `\\server\share\x`.
+pub fn strip_verbatim(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 /// Normalise a bare drive such as "C:" to "C:\".
 pub fn normalize_root(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
@@ -292,6 +304,14 @@ pub fn format_time(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_prefixes_are_stripped() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Data\x"), r"C:\Data\x");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\dir"), r"\\srv\share\dir");
+        assert_eq!(strip_verbatim(r"D:\plain"), r"D:\plain");
+        assert_eq!(strip_verbatim(r"\\srv\share"), r"\\srv\share");
+    }
 
     #[test]
     fn graft_matches_a_full_rescan() {
