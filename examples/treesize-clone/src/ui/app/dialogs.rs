@@ -21,18 +21,21 @@ fn units_label(u: Units) -> String {
 /// The selectable languages (system default, English, every catalogue), shared by the Options
 /// dialog and the ribbon.
 pub(super) fn language_choices(ui: &mut egui::Ui, current: &mut String) {
-    let cur = current.clone();
-    if ui.selectable_label(cur == "auto", language_label("auto")).clicked() {
-        *current = "auto".into();
-    }
-    if ui.selectable_label(cur == "en", "English (en)").clicked() {
-        *current = "en".into();
-    }
-    for l in i18n::LOCALES {
-        if ui.selectable_label(cur.eq_ignore_ascii_case(l.code), format!("{} ({})", l.name, l.code)).clicked() {
-            *current = l.code.to_string();
+    // ~40 entries: scroll instead of running off the screen.
+    egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+        let cur = current.clone();
+        if ui.selectable_label(cur == "auto", language_label("auto")).clicked() {
+            *current = "auto".into();
         }
-    }
+        if ui.selectable_label(cur == "en", "English (en)").clicked() {
+            *current = "en".into();
+        }
+        for l in i18n::LOCALES {
+            if ui.selectable_label(cur.eq_ignore_ascii_case(l.code), format!("{} ({})", l.name, l.code)).clicked() {
+                *current = l.code.to_string();
+            }
+        }
+    });
 }
 
 /// Text of the language combo for the current setting.
