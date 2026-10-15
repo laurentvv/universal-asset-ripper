@@ -810,6 +810,21 @@ impl App {
         }
     }
 
+    /// Compare the current tree with the stored snapshot taken at `taken` (picked in the Changes view).
+    fn compare_with_history(&mut self, taken: i64) {
+        let Some(l) = &self.loaded else { return };
+        let Some(dir) = snapshot::history_dir() else { return };
+        let root = l.tree.get(Tree::ROOT).name.clone();
+        match Snapshot::load(&snapshot::history_file(&dir, &root, taken)) {
+            Ok(old) => {
+                let new = Snapshot::from_tree(&l.tree, chrono::Utc::now().timestamp());
+                self.comparison = Some(Comparison { label: tr("earlier scan"), taken: old.taken, changes: snapshot::diff(&old, &new) });
+                self.compare_notice.clear();
+            }
+            Err(e) => self.compare_notice = format!("{}: {e}", tr("Snapshot no longer available")),
+        }
+    }
+
     fn compare_snapshot_dialog(&mut self) {
         let Some(l) = &self.loaded else { return };
         let mut dlg = rfd::FileDialog::new().add_filter("Snapshot", &["json"]);
@@ -1843,7 +1858,11 @@ impl App {
             return;
         }
         if self.view == ViewKind::Compare {
-            let open = views::compare_view(ui, self.comparison.as_ref().map(|c| (c.label.as_str(), c.taken, c.changes.as_slice())), &self.size_history, &self.compare_notice, self.loaded.as_ref().map(|l| l.tree.get(Tree::ROOT).name.as_str()));
+            let mut pick = None;
+            let open = views::compare_view(ui, self.comparison.as_ref().map(|c| (c.label.as_str(), c.taken, c.changes.as_slice())), &self.size_history, &mut pick, &self.compare_notice, self.loaded.as_ref().map(|l| l.tree.get(Tree::ROOT).name.as_str()));
+            if let Some(t) = pick {
+                self.compare_with_history(t);
+            }
             if let Some(p) = open {
                 open_in_explorer(std::path::Path::new(&p));
             }
