@@ -155,6 +155,11 @@ fn nav_target(ids: &[Option<NodeId>], cur: Option<usize>, delta: i32) -> Option<
     last_ok
 }
 
+/// Scan errors caused by "access denied" (Win32 error 5; the message text itself is localised).
+fn access_denied_count(errors: &[scan::ScanError]) -> usize {
+    errors.iter().filter(|e| e.message.contains("(os error 5)")).count()
+}
+
 fn expandable(tree: &Tree, id: NodeId) -> bool {
     let n = tree.get(id);
     n.is_dir && (!n.children.is_empty() || (tree.live.is_some() && tree.direct_files(id).count > 0))
@@ -279,6 +284,8 @@ pub struct App {
     confirm_files: Option<Vec<(PathBuf, u64)>>,
     comparison: Option<Comparison>,
     size_history: Vec<snapshot::HistoryPoint>,
+    /// Number of folders refused with "access denied" in the last scan (offers an elevated restart).
+    admin_hint: Option<usize>,
     scroll_to: Option<usize>,
     /// Node to scroll to once the tree rows have been rebuilt ("Show in tree").
     reveal: Option<NodeId>,
@@ -463,7 +470,9 @@ pub fn run(opts: RunOptions) -> eframe::Result<()> {
         Box::new(move |cc| {
             let mut app = App::new(&cc.egui_ctx, st, &opts);
             if let Some(p) = &opts.start {
-                let abs = std::path::absolute(p).unwrap_or_else(|_| p.clone());
+                let cleaned = PathBuf::from(scan::model::clean_path_input(&p.to_string_lossy()));
+                let cleaned = scan::model::normalize_root(&cleaned);
+                let abs = std::path::absolute(&cleaned).unwrap_or(cleaned);
                 app.path_text = abs.to_string_lossy().into_owned();
                 app.start_scan();
             }
@@ -576,6 +585,7 @@ impl App {
             confirm_files: None,
             comparison: None,
             size_history: Vec::new(),
+            admin_hint: None,
             scroll_to: None,
             reveal: None,
             compare_notice: String::new(),
@@ -608,12 +618,13 @@ impl App {
         if let Some(h) = &self.handle {
             h.cancel();
         }
-        let root = normalize_root(std::path::Path::new(self.path_text.trim()));
+        let root = normalize_root(std::path::Path::new(&scan::model::clean_path_input(&self.path_text)));
         self.status = format!("{} {} ...", tr("Scanning"), root.display());
         self.notice.clear();
         self.settings.last_path = root.to_string_lossy().into_owned();
         settings::push_recent(&mut self.settings.recent, &self.settings.last_path.clone(), 10);
         self.partial_seen = false;
+        self.admin_hint = None;
         self.scan_started = Instant::now();
         self.scan_total = scan::drive_used_bytes(&root);
         self.scan_root = root.clone();
@@ -752,6 +763,8 @@ impl App {
             self.invalidate();
             self.dup_result = None;
             self.status = if res.cancelled { tr("Scan cancelled") } else { tr("Scan complete") };
+            let denied = access_denied_count(&res.errors);
+            self.admin_hint = (denied > 0 && cfg!(windows) && !scan::mft::is_elevated() && self.shot.is_none()).then_some(denied);
             self.loaded = Some(Loaded {
                 tree: res.tree,
                 root: res.root,
@@ -2165,6 +2178,28 @@ impl App {
         }
     }
 
+    /// Offer an elevated restart when folders were refused (the original asks the same question).
+    fn admin_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(n) = self.admin_hint else { return };
+        let mut restart = false;
+        let mut dismiss = false;
+        egui::Frame::new().fill(ui.visuals().faint_bg_color).inner_margin(6.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} {}", fmt::group_int(n as u64), tr("folders could not be read (access denied).")));
+                restart = ui.button(tr("Restart as Administrator")).clicked();
+                dismiss = ui.button(tr("Dismiss")).clicked();
+            });
+        });
+        ui.add_space(4.0);
+        if dismiss {
+            self.admin_hint = None;
+        }
+        if restart {
+            let ctx = ui.ctx().clone();
+            self.run_cmd(&ctx, Cmd::RestartAdmin);
+        }
+    }
+
     /// Start page: one card per drive with its space usage (click to scan), then recent folders.
     fn start_page(&mut self, ui: &mut egui::Ui) {
         if let Some(rx) = &self.drive_rx {
@@ -2580,6 +2615,7 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
         egui::CentralPanel::default().show(ui, |ui| {
+            self.admin_banner(ui);
             self.central(ui);
         });
         self.windows(&ctx);
@@ -2647,6 +2683,14 @@ mod tests {
         assert_eq!(nav_target(&ids, Some(ids.len()), -1), Some(3), "End");
         assert_eq!(nav_target(&ids, Some(0), 15), Some(3), "page moves clamp to the last node");
         assert_eq!(nav_target(&[], None, 1), None);
+    }
+
+    #[test]
+    fn access_denied_errors_are_counted_by_os_code() {
+        let e = |m: &str| scan::ScanError { path: PathBuf::from("x"), message: m.to_string() };
+        let errs = [e("Accès refusé. (os error 5)"), e("Access is denied. (os error 5)"), e("The system cannot find the path (os error 3)")];
+        assert_eq!(access_denied_count(&errs), 2);
+        assert_eq!(access_denied_count(&[]), 0);
     }
 
     #[test]

@@ -270,6 +270,36 @@ pub fn strip_verbatim(s: &str) -> String {
     }
 }
 
+/// Clean up a path typed or pasted into the path box: surrounding spaces and quotes (Explorer's
+/// "Copy as path" adds them) are removed and `%VARIABLE%` references are expanded.
+pub fn clean_path_input(s: &str) -> String {
+    let t = s.trim().trim_matches('"').trim();
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('%') {
+            Some(j) if j > 0 => match std::env::var(&after[..j]) {
+                Ok(v) => {
+                    out.push_str(&v);
+                    rest = &after[j + 1..];
+                }
+                Err(_) => {
+                    out.push('%');
+                    rest = after;
+                }
+            },
+            _ => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Normalise a bare drive such as "C:" to "C:\".
 pub fn normalize_root(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
@@ -304,6 +334,17 @@ pub fn format_time(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_input_is_cleaned() {
+        assert_eq!(clean_path_input("  \"C:\\Program Files\\App\"  "), "C:\\Program Files\\App");
+        assert_eq!(clean_path_input("D:\\data"), "D:\\data");
+        std::env::set_var("UAR_TEST_DIR", "E:\\xx");
+        assert_eq!(clean_path_input("%UAR_TEST_DIR%\\sub"), "E:\\xx\\sub");
+        assert_eq!(clean_path_input("%NO_SUCH_VAR_42%\\a"), "%NO_SUCH_VAR_42%\\a");
+        assert_eq!(clean_path_input("100%"), "100%");
+        assert_eq!(clean_path_input("%%"), "%%");
+    }
 
     #[test]
     fn verbatim_prefixes_are_stripped() {
