@@ -8,6 +8,7 @@ use super::paint::{self, Icon};
 use super::views::{self, ListEvent};
 use crate::analysis::duplicates::{self, DupGroup};
 use crate::analysis::filter::{self, Filter};
+use crate::analysis::snapshot::{self, DirDelta, Snapshot};
 use crate::analysis::types::{self, TypeStat};
 use crate::dfm::{self, Item};
 use crate::export;
@@ -151,6 +152,14 @@ struct NameDialog {
     err: String,
 }
 
+/// Result of comparing the current scan with an older snapshot.
+struct Comparison {
+    /// Where the old snapshot comes from (`last scan` or a file name) and when it was taken.
+    label: String,
+    taken: i64,
+    changes: Vec<DirDelta>,
+}
+
 struct Loaded {
     tree: Tree,
     root: PathBuf,
@@ -223,6 +232,8 @@ pub struct App {
     props: Option<NodeId>,
     confirm_delete: Option<NodeId>,
     name_dialog: Option<NameDialog>,
+    comparison: Option<Comparison>,
+    compare_notice: String,
     /// Background re-scan of one folder: its name path (stable across tree edits) and the scan.
     sub_scan: Option<(Vec<String>, ScanHandle)>,
     delete_error: Option<String>,
@@ -275,6 +286,7 @@ pub fn parse_view(name: &str) -> Option<ViewKind> {
         "largest" => ViewKind::Largest,
         "oldest" => ViewKind::Oldest,
         "duplicates" => ViewKind::Duplicates,
+        "compare" => ViewKind::Compare,
         _ => return None,
     })
 }
@@ -497,6 +509,8 @@ impl App {
             props: None,
             confirm_delete: None,
             name_dialog: None,
+            comparison: None,
+            compare_notice: String::new(),
             sub_scan: None,
             delete_error: None,
             show_errors: false,
@@ -676,11 +690,60 @@ impl App {
                 error_list: res.errors,
                 cancelled: res.cancelled,
             });
+            self.on_scan_complete();
         }
         if let Some(t) = latest {
             self.apply_partial(t);
         }
         self.patch_live_counters();
+    }
+
+    /// After a finished scan: compare with the newest stored snapshot of this root, then store the
+    /// new one (history is capped at 20 files per root).
+    fn on_scan_complete(&mut self) {
+        let Some(l) = &self.loaded else { return };
+        if l.cancelled || !self.persist_enabled {
+            return;
+        }
+        let Some(dir) = snapshot::history_dir() else { return };
+        self.comparison = snapshot::record_and_compare(&dir, &l.tree, chrono::Utc::now().timestamp())
+            .map(|(taken, changes)| Comparison { label: tr("last scan"), taken, changes });
+    }
+
+    fn save_snapshot_dialog(&mut self) {
+        let Some(l) = &self.loaded else { return };
+        let root = l.tree.get(Tree::ROOT).name.clone();
+        let snap = Snapshot::from_tree(&l.tree, chrono::Utc::now().timestamp());
+        let mut dlg = rfd::FileDialog::new().add_filter("Snapshot", &["json"]).set_file_name("snapshot.json");
+        if let Some(d) = snapshot::history_dir() {
+            let _ = std::fs::create_dir_all(&d);
+            dlg = dlg.set_directory(d);
+        }
+        if let Some(p) = dlg.save_file() {
+            self.compare_notice = match snap.save(&p) {
+                Ok(()) => format!("{}: {} ({root})", tr("Snapshot saved"), p.display()),
+                Err(e) => e,
+            };
+        }
+    }
+
+    fn compare_snapshot_dialog(&mut self) {
+        let Some(l) = &self.loaded else { return };
+        let mut dlg = rfd::FileDialog::new().add_filter("Snapshot", &["json"]);
+        if let Some(d) = snapshot::history_dir() {
+            dlg = dlg.set_directory(d);
+        }
+        let Some(p) = dlg.pick_file() else { return };
+        match Snapshot::load(&p) {
+            Ok(old) => {
+                let new = Snapshot::from_tree(&l.tree, chrono::Utc::now().timestamp());
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.comparison = Some(Comparison { label: name, taken: old.taken, changes: snapshot::diff(&old, &new) });
+                self.compare_notice.clear();
+                self.view = ViewKind::Compare;
+            }
+            Err(e) => self.compare_notice = format!("{}: {e}", p.display()),
+        }
     }
 
     /// While scanning, the root row shows the scanner's own counters when they are ahead of the
@@ -896,6 +959,7 @@ impl App {
             }
             Cmd::RestartAdmin => cfg!(windows) && !scan::mft::is_elevated(),
             Cmd::NewFolder => loaded && !scanning && self.sub_scan.is_none(),
+            Cmd::SnapshotSave | Cmd::SnapshotCompare => loaded && !scanning,
             Cmd::OpenLocation | Cmd::ExpandLevel(_) | Cmd::ExpandFull => loaded,
             Cmd::ExcludeSelected => self.selected.is_some_and(|s| s != Tree::ROOT) && loaded,
             _ => true,
@@ -969,6 +1033,8 @@ impl App {
                 let target = self.selected.filter(|&s| self.loaded.as_ref().is_some_and(|l| l.tree.get(s).is_dir)).unwrap_or(Tree::ROOT);
                 self.apply(ctx, vec![Action::NewFolder(target)]);
             }
+            Cmd::SnapshotSave => self.save_snapshot_dialog(),
+            Cmd::SnapshotCompare => self.compare_snapshot_dialog(),
             Cmd::RescanSelected => {
                 if let Some(id) = self.selected {
                     self.apply(ctx, vec![Action::Rescan(id)]);
@@ -1660,6 +1726,13 @@ impl App {
     }
 
     fn central(&mut self, ui: &mut egui::Ui) {
+        if self.view == ViewKind::Compare {
+            let open = views::compare_view(ui, self.comparison.as_ref().map(|c| (c.label.as_str(), c.taken, c.changes.as_slice())), &self.compare_notice, self.loaded.as_ref().map(|l| l.tree.get(Tree::ROOT).name.as_str()));
+            if let Some(p) = open {
+                open_in_explorer(std::path::Path::new(&p));
+            }
+            return;
+        }
         if self.view == ViewKind::Duplicates {
             if self.loaded.is_none() {
                 ui.label(tr("Scan a folder first."));
@@ -1707,7 +1780,7 @@ impl App {
             ViewKind::Oldest => {
                 ev = views::file_list_view(ui, self.oldest_cache.as_deref().unwrap_or(&[]), "oldest", self.selected)
             }
-            ViewKind::Tree | ViewKind::Duplicates => {}
+            ViewKind::Tree | ViewKind::Duplicates | ViewKind::Compare => {}
         }
         match ev {
             Some(ListEvent::Select(id)) => self.selected = Some(id),

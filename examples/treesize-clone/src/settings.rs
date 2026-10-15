@@ -25,6 +25,7 @@ pub enum ViewKind {
     Largest,
     Oldest,
     Duplicates,
+    Compare,
 }
 
 /// Unit used to display sizes everywhere (tree, status bar, views, exports).

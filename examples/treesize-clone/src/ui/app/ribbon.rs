@@ -202,6 +202,11 @@ impl App {
                             self.big(ui, &mut out, Cmd::SetView(v), ic, l);
                         }
                     });
+                    group(ui, &tr("History"), |ui| {
+                        self.big(ui, &mut out, Cmd::SetView(ViewKind::Compare), Icon::Oldest, "Changes since last scan");
+                        self.big(ui, &mut out, Cmd::SnapshotCompare, Icon::Open, "Compare with snapshot...");
+                        self.big(ui, &mut out, Cmd::SnapshotSave, Icon::Export, "Save snapshot...");
+                    });
                     group(ui, &tr("Scan"), |ui| {
                         if big_button(ui, Icon::Bolt, &tr("Fast NTFS scan (admin)"), !scanning, self.fast_ntfs).clicked() {
                             out = Some(Cmd::ToggleFast);
