@@ -231,6 +231,7 @@ impl App {
                 3 => {
                     group(ui, &cap("GrpViewTitleAction", "View"), |ui| {
                         self.big(ui, &mut out, Cmd::ToggleDetails, Icon::Details, "Show Details");
+                        self.big(ui, &mut out, Cmd::ToggleMap, Icon::Treemap, "Proportional map");
                         self.big(ui, &mut out, Cmd::ExpandFull, Icon::Expand, "Expand all");
                     });
                     group(ui, &tr("Expand"), |ui| {

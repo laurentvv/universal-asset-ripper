@@ -43,6 +43,8 @@ pub fn row_menu(resp: &egui::Response, id: NodeId) -> Option<ListEvent> {
 }
 
 pub enum ListEvent {
+    /// Select the node in the tree and scroll to it (map panel click).
+    Reveal(NodeId),
     Menu(NodeId, MenuAct),
     Select(NodeId),
     Open(NodeId),
@@ -125,17 +127,19 @@ pub fn breadcrumb(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId) {
 }
 
 /// Level colours of the nested treemap (level 0 darkest), close to the original "Carte proportionnelle".
-const LEVELS: [Color32; 4] = [Color32::from_rgb(18, 38, 88), Color32::from_rgb(32, 62, 128), Color32::from_rgb(52, 92, 164), Color32::from_rgb(78, 122, 192)];
+const LEVELS: [Color32; 5] = [Color32::from_rgb(18, 38, 88), Color32::from_rgb(32, 62, 128), Color32::from_rgb(52, 92, 164), Color32::from_rgb(78, 122, 192), Color32::from_rgb(110, 150, 215)];
 
-pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected: &mut Option<NodeId>) -> Option<ListEvent> {
+pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected: &mut Option<NodeId>, docked: bool) -> Option<ListEvent> {
     use super::treemap::{nested, tile_at, HEADER_H};
-    breadcrumb(ui, tree, root);
+    if !docked {
+        breadcrumb(ui, tree, root);
+    }
     let legend_h = 24.0;
     let avail = ui.available_size();
     let (resp, painter) = ui.allocate_painter(egui::vec2(avail.x, (avail.y - legend_h).max(40.0)), Sense::click());
     let area = resp.rect;
     painter.rect_filled(area, 0.0, ui.visuals().extreme_bg_color);
-    let tiles = nested(tree, *root, TRect::new(0.0, 0.0, area.width(), area.height()), 3, MAX_TILES);
+    let tiles = nested(tree, *root, TRect::new(0.0, 0.0, area.width(), area.height()), 4, MAX_TILES);
     if tiles.is_empty() {
         painter.text(area.center(), egui::Align2::CENTER_CENTER, tr("Nothing to show"), egui::FontId::proportional(14.0), ui.visuals().text_color());
     }
@@ -145,7 +149,7 @@ pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected:
     let font = egui::FontId::proportional(11.0);
     for (i, t) in tiles.iter().enumerate() {
         let rect = to_rect(t.rect);
-        let base = LEVELS[(t.depth as usize).min(3)];
+        let base = LEVELS[(t.depth as usize).min(4)];
         let mut fill = if t.files_of { Color32::from_rgb(base.r().saturating_add(18), base.g().saturating_add(22), base.b().saturating_add(26)) } else { base };
         if hit == Some(i) {
             fill = fill.gamma_multiply(1.35);
@@ -196,11 +200,14 @@ pub fn treemap_view(ui: &mut egui::Ui, tree: &Tree, root: &mut NodeId, selected:
             *root = t.id;
         } else if resp.clicked() {
             *selected = Some(t.id);
+            if docked && event.is_none() {
+                event = Some(ListEvent::Reveal(t.id));
+            }
         }
     }
     // Level legend, like the original.
     let (lr, lp) = ui.allocate_painter(egui::vec2(avail.x, legend_h), Sense::hover());
-    let w = lr.rect.width() / 4.0;
+    let w = lr.rect.width() / LEVELS.len() as f32;
     for (i, c) in LEVELS.iter().enumerate() {
         let r = egui::Rect::from_min_size(lr.rect.min + egui::vec2(w * i as f32 + 2.0, 3.0), egui::vec2(w - 4.0, legend_h - 6.0));
         lp.rect_filled(r, 0.0, *c);

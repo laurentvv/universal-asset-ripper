@@ -618,7 +618,16 @@ impl App {
         if let Some(h) = &self.handle {
             h.cancel();
         }
+        // A folder re-scan in flight belongs to the tree that is about to be replaced.
+        if let Some((_, h)) = self.sub_scan.take() {
+            h.cancel();
+        }
         let root = normalize_root(std::path::Path::new(&scan::model::clean_path_input(&self.path_text)));
+        if !root.is_dir() {
+            // Do not replace the current results by an empty tree for a typo.
+            self.status = format!("{}: {}", tr("Folder not found"), root.display());
+            return;
+        }
         self.status = format!("{} {} ...", tr("Scanning"), root.display());
         self.notice.clear();
         self.settings.last_path = root.to_string_lossy().into_owned();
@@ -1072,6 +1081,7 @@ impl App {
             Cmd::SortBy(k) => self.sort == k,
             Cmd::SetUnits(u) => self.settings.units == u,
             Cmd::ToggleDetails => self.settings.details,
+            Cmd::ToggleMap => self.settings.show_map,
             Cmd::Filter => self.show_filters,
             Cmd::SetView(v) => self.view == v,
             Cmd::ToggleFast => self.fast_ntfs,
@@ -1124,6 +1134,7 @@ impl App {
             Cmd::SortBy(k) => self.set_sort(k),
             Cmd::SetUnits(u) => self.settings.units = u,
             Cmd::ToggleDetails => self.settings.details = !self.settings.details,
+            Cmd::ToggleMap => self.settings.show_map = !self.settings.show_map,
             Cmd::Exit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Cmd::NewInstance => {
                 if let Ok(exe) = std::env::current_exe() {
@@ -1906,7 +1917,7 @@ impl App {
         let tree = &l.tree;
         let mut ev = None;
         match self.view {
-            ViewKind::Treemap => ev = views::treemap_view(ui, tree, &mut self.view_root, &mut self.selected),
+            ViewKind::Treemap => ev = views::treemap_view(ui, tree, &mut self.view_root, &mut self.selected, false),
             ViewKind::Chart => views::chart_view(ui, tree, &mut self.view_root),
             ViewKind::Types => views::types_view(ui, self.types_cache.as_deref().unwrap_or(&[])),
             ViewKind::Largest => {
@@ -1925,6 +1936,7 @@ impl App {
     fn list_event(&mut self, ctx: &egui::Context, ev: Option<ListEvent>) {
         match ev {
             Some(ListEvent::Select(id)) => self.selected = Some(id),
+            Some(ListEvent::Reveal(id)) => self.reveal_in_tree(id),
             Some(ListEvent::Open(id)) => {
                 if let Some(l) = &self.loaded {
                     open_in_explorer(&l.tree.path_of(id));
@@ -2197,6 +2209,43 @@ impl App {
         }
     }
 
+    /// Proportional map docked under the tree: shows the selected folder (the scan root when
+    /// nothing, or a file, is selected); clicking a tile selects it in the tree.
+    fn map_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(l) = &self.loaded else { return };
+        let tree = &l.tree;
+        let mut root = self.selected.filter(|&s| (s as usize) < tree.nodes.len()).unwrap_or(Tree::ROOT);
+        if !tree.get(root).is_dir {
+            root = tree.get(root).parent.min(tree.nodes.len() as u32 - 1);
+        }
+        // Drag handle on the top edge (the panel itself is fixed-size: its content would otherwise grow to the maximum).
+        let (hrect, hresp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), Sense::drag());
+        if hresp.hovered() || hresp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if hresp.dragged() {
+            let screen_h = ui.ctx().content_rect().height();
+            let cur = if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen_h * 0.36).max(180.0) };
+            self.settings.map_height = (cur - hresp.drag_delta().y).clamp(100.0, (screen_h * 0.7).max(120.0));
+        }
+        ui.painter().rect_filled(hrect.shrink2(egui::vec2(0.0, 1.5)), 0.0, if hresp.hovered() { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.noninteractive.bg_stroke.color });
+        let mut close = false;
+        ui.horizontal(|ui| {
+            let n = tree.get(root);
+            ui.label(RichText::new(format!("{} ({})", tree.path_of(root).display(), format_bytes(n.size))).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = ui.small_button("x").on_hover_text(tr("Close")).clicked();
+            });
+        });
+        let mut sel = self.selected;
+        let ev = views::treemap_view(ui, tree, &mut root, &mut sel, true);
+        let ctx = ui.ctx().clone();
+        if close {
+            self.settings.show_map = false;
+        }
+        self.list_event(&ctx, ev);
+    }
+
     /// Offer an elevated restart when folders were refused (the original asks the same question).
     fn admin_banner(&mut self, ui: &mut egui::Ui) {
         let Some(n) = self.admin_hint else { return };
@@ -2430,7 +2479,9 @@ impl App {
 
     fn delete_window(&mut self, ctx: &egui::Context) {
         if self.confirm_delete.is_none() && self.delete_error.is_none() {
-            if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
+            // Only where the selection is visible: a stale selection from another view must not be deletable blind.
+            let selection_visible = matches!(self.view, ViewKind::Tree | ViewKind::Largest | ViewKind::Oldest | ViewKind::Cleanup);
+            if selection_visible && ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !ctx.egui_wants_keyboard_input() {
                 if let Some(id) = self.selected.filter(|&id| id != Tree::ROOT && self.handle.is_none()) {
                     self.confirm_delete = Some(id);
                 }
@@ -2633,6 +2684,14 @@ impl eframe::App for App {
             self.status_bar(ui);
             ui.add_space(2.0);
         });
+        if self.settings.show_map && self.view == ViewKind::Tree && self.loaded.is_some() {
+            let screen_h = ui.ctx().content_rect().height();
+            let h = if self.settings.map_height >= 100.0 { self.settings.map_height } else { (screen_h * 0.36).max(180.0) };
+            let h = h.clamp(100.0, (screen_h * 0.7).max(120.0));
+            egui::Panel::bottom("map").resizable(false).exact_size(h).show(ui, |ui| {
+                self.map_panel(ui);
+            });
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             self.admin_banner(ui);
             self.central(ui);
