@@ -165,6 +165,12 @@ fn access_denied_count(errors: &[scan::ScanError]) -> usize {
 }
 
 /// Columns of the tree table, left to right: the Options flags and the hidden set combined.
+/// Relaunch elevated only when asked for, on Windows, outside screenshot mode and not already elevated
+/// (so the elevated copy never restarts itself again).
+fn wants_elevation(always_admin: bool, shot_mode: bool, elevated: bool) -> bool {
+    always_admin && cfg!(windows) && !shot_mode && !elevated
+}
+
 fn visible_columns(show_allocated: bool, details: bool, hidden: &[SortCol]) -> Vec<SortCol> {
     let mut cols = vec![SortCol::Name, SortCol::Size];
     if show_allocated {
@@ -491,6 +497,12 @@ pub fn run(opts: RunOptions) -> eframe::Result<()> {
     } else {
         settings::default_path().as_deref().map(settings::load_from).unwrap_or_default()
     };
+    if wants_elevation(st.always_admin, shot_mode, scan::mft::is_elevated()) {
+        let target = opts.start.clone().or_else(|| (!st.last_path.is_empty()).then(|| PathBuf::from(&st.last_path))).unwrap_or_default();
+        if restart_as_admin(&target) {
+            return Ok(()); // the elevated copy takes over
+        }
+    }
     let geom = st.window.and_then(|g| sanitize_geom(g, (spec.min_w, spec.min_h))).filter(|_| !shot_mode);
     // Default window: 1200x800, centred; a saved geometry wins.
     let (w, h) = match geom {
@@ -2954,6 +2966,14 @@ mod tests {
         let errs = [e("Accès refusé. (os error 5)"), e("Access is denied. (os error 5)"), e("The system cannot find the path (os error 3)")];
         assert_eq!(access_denied_count(&errs), 2);
         assert_eq!(access_denied_count(&[]), 0);
+    }
+
+    #[test]
+    fn elevation_is_requested_once() {
+        assert!(wants_elevation(true, false, false) == cfg!(windows));
+        assert!(!wants_elevation(true, false, true), "already elevated: no restart loop");
+        assert!(!wants_elevation(false, false, false));
+        assert!(!wants_elevation(true, true, false), "never in screenshot mode");
     }
 
     #[test]

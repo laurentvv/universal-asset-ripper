@@ -122,6 +122,7 @@ static FR: &[(&str, &str)] = &[
     ("Find in tree", "Chercher dans l'arborescence"),
     ("Hide empty folders", "Masquer les dossiers vides"),
     ("No match", "Aucun résultat"),
+    ("Always start as administrator", "Toujours démarrer en tant qu'administrateur"),
     ("changed folders", "dossiers modifiés"),
     ("deleted", "supprimé"),
     ("folders", "dossiers"),
