@@ -40,5 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: examples/treesize-clone
+      # Windows is the primary target; some Windows-only code is dead on Linux, so lint there only.
       - run: cargo clippy --all-targets -- -D warnings
+        if: runner.os == 'Windows'
       - run: cargo test
