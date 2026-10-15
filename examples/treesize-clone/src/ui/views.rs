@@ -384,7 +384,7 @@ pub fn file_list_view(ui: &mut egui::Ui, rows: &[RankedRow], salt: &str, selecte
 }
 
 /// "Changes since an older scan": folders ranked by absolute size change. Returns a path to open.
-pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis::snapshot::DirDelta])>, history: &[crate::analysis::snapshot::HistoryPoint], notice: &str, root: Option<&str>) -> Option<String> {
+pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis::snapshot::DirDelta])>, history: &[crate::analysis::snapshot::HistoryPoint], pick: &mut Option<i64>, notice: &str, root: Option<&str>) -> Option<String> {
     use crate::analysis::snapshot::ChangeKind;
     if !notice.is_empty() {
         ui.label(notice);
@@ -392,6 +392,18 @@ pub fn compare_view(ui: &mut egui::Ui, cmp: Option<(&str, i64, &[crate::analysis
     if history.len() > 1 {
         size_history_chart(ui, history);
         ui.add_space(6.0);
+        // Baseline picker: every earlier scan whose snapshot is still stored (the newest point is this scan).
+        ui.horizontal(|ui| {
+            ui.label(tr("Compare with"));
+            egui::ComboBox::from_id_salt("baseline").selected_text(cmp.map(|c| c.0.to_string()).unwrap_or_default()).show_ui(ui, |ui| {
+                for p in history[..history.len() - 1].iter().rev() {
+                    let text = format!("{} - {}", format_time(p.taken), format_bytes(p.size));
+                    if ui.selectable_label(cmp.is_some_and(|c| c.1 == p.taken), text).clicked() {
+                        *pick = Some(p.taken);
+                    }
+                }
+            });
+        });
     }
     let Some((label, taken, changes)) = cmp else {
         ui.label(tr("No earlier scan of this folder to compare with yet. Scan it again later, or use Compare with snapshot."));
