@@ -47,3 +47,4 @@ Thumbs.db
 # Committed test fixtures
 !tests/fixtures/**
 coverage/
+.agent/*.duckdb.wal
