@@ -60,14 +60,21 @@ pub struct TestServer {
     pub events: Events,
     /// Root directory exposed over SFTP.
     pub root: PathBuf,
+    /// SHA256 fingerprint of the server host key (for -hostKeyFp tests).
+    pub fingerprint: String,
 }
 
 /// Start a test server on 127.0.0.1 with a random port.
 pub async fn start() -> Result<TestServer> {
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
+    let fingerprint = key
+        .public_key()
+        .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+        .to_string();
     let config = Arc::new(russh::server::Config {
         auth_rejection_time: Duration::from_millis(100),
         auth_rejection_time_initial: Some(Duration::from_millis(0)),
-        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?],
+        keys: vec![key],
         ..Default::default()
     });
 
@@ -86,7 +93,12 @@ pub async fn start() -> Result<TestServer> {
         }
     });
 
-    Ok(TestServer { addr, events, root })
+    Ok(TestServer {
+        addr,
+        events,
+        root,
+        fingerprint,
+    })
 }
 
 #[derive(Clone)]

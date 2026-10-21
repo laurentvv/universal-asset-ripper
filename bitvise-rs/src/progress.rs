@@ -23,6 +23,11 @@ impl Progress {
         }
     }
 
+    /// Force progress on/off (sftpc `-progress=none` disables it).
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     pub fn advance(&mut self, n: u64) {
         self.done += n;
         let now = Instant::now();

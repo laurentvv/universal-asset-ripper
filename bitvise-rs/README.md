@@ -17,6 +17,45 @@ transport is [russh] 0.63 (pure Rust, `ring` crypto backend) with
 | `bvtermc.exe` / `totermc.exe` | Bitvise/VT100 terminal clients  | covered by `bvrs shell` (raw byte PTY)   |
 | `stnlc.exe`               | Scriptable telnet client             | **not implemented** (SSH only)           |
 
+## Bitvise command-line compatibility
+
+`bvrs` accepts the Bitvise single-dash `-option=value` syntax on all
+subcommands (source of truth: the built-in usage text of `sftpc`/`stermc`/
+`sexec` 9.66). Supported options:
+
+| Bitvise option | bvrs behavior |
+|---|---|
+| `[user@]host[:port]` or `-host=` + `-user=` + `-port=` | destination (`-host=` wins over a positional, which then becomes the first command word) |
+| `-pw=password` | password authentication (prefer `--password-env` in scripts) |
+| `-keypairFile=file` + `-keypairPass=pass` | public key authentication |
+| `-hostKeyFp=SHA256:...` / `-hostKeyFile=file` | pin the server host key by SHA256 fingerprint (replaces known_hosts checking, mismatch is fatal) |
+| `-cmd="a; b"` / `-cmdFile=file` (`#` comments) | SFTP command batch (`;`-separated / one per line) |
+| `-ce` | continue an SFTP batch on error (exit code still reports failure) |
+| `-progress=none` | disable transfer progress (other values: enabled) |
+| `-noRegistry=` | accepted, ignored (bvrs never reads the registry) |
+
+Any other Bitvise option (proxies, jump hosts, algorithm negotiation,
+keyboard-interactive, …) is rejected with an explicit `not supported` error
+instead of being silently misparsed.
+
+`bvrs sftp` runs sftpc-style commands from positional arguments (one
+command per argument), `-cmd=`/`-cmdFile=`, or stdin:
+
+```
+bvrs sftp deploy@web1 "mkdir release" "put app.tar.gz release/"
+echo -e "cd /srv
+ls
+get app.log" | bvrs sftp deploy@web1
+bvrs sftp deploy@web1 -cmdFile=deploy.cmds -ce
+```
+
+Implemented commands: `cd`, `pwd`, `ls`/`dir`, `lcd`, `lpwd`, `lls`/`ldir`,
+`get`, `put`, `mkdir`/`md`, `rmdir`/`rd`, `mv`/`move`, `del`/`rm`,
+`lmkdir`/`lmd`, `lrmdir`/`lrd`, `lmv`/`lmove`, `ldel`/`lrm`, `stat`,
+`realpath`, `help`, `exit`/`quit`/`bye`. Not implemented from sftpc:
+`queue`, `symlink`/`ln`, `chmod`/`chown`/`chgrp`, `attrib`, `type`,
+checksum commands, `df`, `exec`, `!`.
+
 ## Usage
 
 ```text

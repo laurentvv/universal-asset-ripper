@@ -5,16 +5,20 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use russh::client::{self, Handle};
+use russh::keys::ssh_key::HashAlg;
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
 
 use crate::cli::AuthOpts;
 use crate::dest::Destination;
 use crate::hostkeys;
 
-/// russh client handler performing known_hosts verification.
+/// russh client handler performing host key verification.
 pub struct ClientHandler {
     policy: hostkeys::HostKeyPolicy,
     known_hosts: std::path::PathBuf,
+    /// Fingerprints pinned via -hostKeyFp= / -hostKeyFile=; when non-empty
+    /// they replace known_hosts checking (Bitvise semantics).
+    pinned: Vec<String>,
     host: String,
     port: u16,
 }
@@ -30,10 +34,30 @@ impl client::Handler for ClientHandler {
             PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
             PublicKeyOrCertificate::Certificate(cert) => cert.public_key().clone().into(),
         };
+
+        if !self.pinned.is_empty() {
+            let sha256 = key.fingerprint(HashAlg::Sha256).to_string();
+            let matches = self
+                .pinned
+                .iter()
+                .any(|p| normalize_fp(p) == normalize_fp(&sha256));
+            if !matches {
+                return Err(anyhow!(
+                    "server host key fingerprint {sha256} does not match -hostKeyFp"
+                ));
+            }
+            return Ok(true);
+        }
+
         hostkeys::confirm_and_record(self.policy, &self.known_hosts, &self.host, self.port, &key)
             .map(|()| true)
             .map_err(|e| anyhow!("host key verification failed: {e:#}"))
     }
+}
+
+/// Compare fingerprints ignoring the `SHA256:` prefix and case.
+fn normalize_fp(fp: &str) -> String {
+    fp.trim().trim_start_matches("SHA256:").to_ascii_lowercase()
 }
 
 /// Connect to `dest` and authenticate (identities first, then password).
@@ -43,6 +67,7 @@ pub async fn connect(opts: &AuthOpts, dest: &Destination) -> Result<Handle<Clien
     let handler = ClientHandler {
         policy: opts.host_key_policy,
         known_hosts: opts.known_hosts.clone(),
+        pinned: opts.pinned_fingerprints.clone(),
         host: dest.host.clone(),
         port,
     };
@@ -55,7 +80,7 @@ pub async fn connect(opts: &AuthOpts, dest: &Destination) -> Result<Handle<Clien
 
     // Public key authentication: try each identity in order.
     for path in &opts.identities {
-        let key = load_secret_key(path, None)
+        let key = load_secret_key(path, opts.identity_passphrase.as_deref())
             .with_context(|| format!("loading identity {}", path.display()))?;
         let auth = authenticate_publickey(&mut handle, &dest.user, key).await?;
         if auth {
@@ -64,8 +89,16 @@ pub async fn connect(opts: &AuthOpts, dest: &Destination) -> Result<Handle<Clien
         eprintln!("bvrs: identity {} rejected", path.display());
     }
 
-    // Password authentication: from --password-env or an interactive prompt.
-    let password = read_password(opts.password_env.as_deref())?;
+    // Password authentication: -pw=, then --password-env, then a prompt.
+    let password = match (&opts.password, &opts.password_env) {
+        (Some(pw), _) => pw.clone(),
+        (None, Some(var)) => std::env::var(var).map_err(|_| {
+            anyhow!("environment variable {var:?} (from --password-env) is not set")
+        })?,
+        (None, None) => {
+            rpassword::prompt_password("password: ").context("reading password from terminal")?
+        }
+    };
     let auth = handle
         .authenticate_password(&dest.user, &password)
         .await
@@ -91,12 +124,4 @@ async fn authenticate_publickey(
         .await
         .context("publickey authentication request failed")?;
     Ok(auth.success())
-}
-
-fn read_password(var: Option<&str>) -> Result<String> {
-    match var {
-        Some(var) => std::env::var(var)
-            .map_err(|_| anyhow!("environment variable {var:?} (from --password-env) is not set")),
-        None => rpassword::prompt_password("password: ").context("reading password from terminal"),
-    }
 }
