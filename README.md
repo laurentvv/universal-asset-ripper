@@ -37,7 +37,7 @@ Whether analyzing **Godot** archives, **Unreal Engine** IoStore/PAK containers, 
   - **Unreal `.pak` index (v1-v11) :** lists and extracts stored, Zlib and Gzip entries natively, with AES-256 (ECB) decryption of the index and of entries (`--aes-key`, hex with/without `0x` or base64). Oodle and other codecs, and anything the native reader cannot parse, fall back to the `repak` CLI.
   - **Electron :** `app.asar` (incl. `.unpacked` files) and Chromium `resources.pak` (v3/v4/v5, extracted as `res_<id>.<ext>`, extension guessed from magic numbers - heuristic).
   - **Godot encrypted PCK :** directory and per-file AES-256-CFB decryption with the script encryption key (`--aes-key`, 64 hex chars); `--convert` writes `.ctex`/`.stex` that wrap a plain PNG/WebP as images.
-  - **Windows PE (.rsrc) :** Complete multi-resolution `.ico` icon reconstruction, Delphi `.dfm` form extraction, XML manifests, bitmaps, and raw `RCDATA`.
+  - **Windows PE (.rsrc) :** Complete multi-resolution `.ico` icon reconstruction, Delphi `.dfm` form extraction, **Win32 dialog template decoding (`RT_DIALOG` → JSON with title + every control label — DLGTEMPLATE and DLGTEMPLATEEX incl. the `01 00 ff ff` compiled header order)**, XML manifests, bitmaps, and raw `RCDATA`.
 * 📊 **Asset Manifest & Inspection (`ripper inspect`) :**
   - Full cataloging across unified categories: textures, 3D meshes, audio, scenes, scripts, shaders, fonts, videos, and manifests.
 * ⚡ **Targeted Extraction (`ripper extract`) :**
@@ -56,6 +56,27 @@ Whether analyzing **Godot** archives, **Unreal Engine** IoStore/PAK containers, 
   - Feeds extracted assets and decrypted structures directly into generative game modding frameworks such as [rehan-remade/universal-modder](https://github.com/rehan-remade/universal-modder) (fal.ai / ComfyUI asset replacement and in-game testing).
 
 ---
+
+## 🧬 Clean-Room Reimplementation Workflow
+
+The PE recon capabilities power a proven **inventory → port** pipeline for
+installed Windows software (observation only — resources, built-in usage,
+embedded help; never decompilation):
+
+1. `ripper detect` / `ripper extract` over the installation → dialog,
+   string and help inventories (the feature map)
+2. capture the CLI tools' built-in usage text (authoritative)
+3. write a precise inventory document (executables, DLL→OSS mapping,
+   windows, options, coverage statuses)
+4. clean-room port (e.g. Rust) verified against an in-process mock server
+
+Packaged as the **`clean-room-port` skill** (`.zcode/skills/` in this
+repository), documented in
+[docs/workflow-clean-room-reimplementation.md](docs/workflow-clean-room-reimplementation.md).
+Worked example: the **Bitvise SSH Client** port — CLI + egui GUI + Bitvise
+option compatibility — in [`bitvise-rs/`](bitvise-rs/README.md), with its
+[precise inventory](bitvise-rs/docs/inventory.md) (16 executables, 57
+decoded dialogs).
 
 ## 🏗️ Architecture
 
