@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { BaseEngineAdapter } from "./engine-adapter.js";
 import { PeResourceParser, type PeInfo, type PeResourceEntry } from "../parsers/pe/pe-resource-parser.js";
 import { buildBmpFile, decodeStringBlock, decodeVersionInfo } from "../parsers/pe/pe-resource-decoders.js";
+import { parseDialogTemplate } from "../parsers/pe/pe-dialog-template.js";
 import { convertBinaryDfmToText, isBinaryDfm } from "../parsers/delphi/dfm-converter.js";
 import { resolveSafeOutputPath } from "../utils/file-utils.js";
 import type {
@@ -132,9 +133,12 @@ export class PeSoftwareAdapter extends BaseEngineAdapter {
           category = "config";
           relPath += ".rcdata";
           break;
-        case 4: // RT_MENU
-        case 5: // RT_DIALOG
+        case 4: // RT_MENU stays raw
           relPath += ".bin";
+          break;
+        case 5: // RT_DIALOG: decoded to JSON by the extract step
+          category = "config";
+          relPath += ".json";
           break;
         case 8: // RT_FONT
           category = "font";
@@ -303,9 +307,19 @@ export class PeSoftwareAdapter extends BaseEngineAdapter {
             } else {
               fileName = `version_${id}.bin`;
             }
-          } else if (res.typeId === 4 || res.typeId === 5) {
-            // RT_MENU / RT_DIALOG stay raw
+          } else if (res.typeId === 4) {
+            // RT_MENU stays raw
             fileName = `res_${id}.bin`;
+          } else if (res.typeId === 5) {
+            // RT_DIALOG: decode DLGTEMPLATE(EX) to readable JSON
+            const dialog = parseDialogTemplate(buf);
+            subDir = "dialogs";
+            if (dialog) {
+              fileName = `dialog_${id}.json`;
+              content = Buffer.from(JSON.stringify(dialog, null, 2), "utf8");
+            } else {
+              fileName = `res_${id}.bin`;
+            }
           } else if (res.typeId === 10) {
             // RT_RCDATA
             subDir = "rcdata";

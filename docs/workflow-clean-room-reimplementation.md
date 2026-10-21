@@ -44,7 +44,7 @@ public docs ──► vendor documentation      ──► confirmation
 | Step | Command | What it yields |
 |---|---|---|
 | Identify | `ripper detect <exe>` | framework (Delphi/MFC/.NET/Qt/native), architecture, resource inventory |
-| Inventory | `ripper extract <exe> -o dir` | `rt_dialog`, `rt_menu`, `strings/*`, `rtf/*`, icons — the UI feature map |
+| Inventory | `ripper extract <exe> -o dir` | `dialogs/*.json` (decoded Win32 dialog templates: title + every control label), `strings/*`, `rtf/*` help, icons — the UI feature map |
 | Usage text | run `<cli-tool>.exe` (no args), `-help-*` | exact option surface for CLI compatibility |
 | Cross-check | vendor documentation | semantics of each option |
 | Port | own code, public protocol specs (RFC 4251… for SSH) | the clone |
@@ -54,8 +54,19 @@ public docs ──► vendor documentation      ──► confirmation
 
 - Reconnaissance output: `.scratch/<target>-resources/` (git-ignored).
 - Ports live next to their inputs' study notes; see `bitvise-rs/README.md`
-  for the Bitvise mapping and the compatibility table built with this
-  workflow.
+  for the Bitvise mapping, and `bitvise-rs/docs/inventory.md` for the full
+  precise inventory (executables, DLLs, tabs, 57 decoded dialogs) built
+  with this workflow.
+
+## Skill
+
+The whole pipeline is packaged as the ZCode skill **`clean-room-port`**
+(`~/.agents/skills/clean-room-port/`): trigger it by giving an installation
+path and asking for an inventory or a reimplementation. A one-line prompt
+is enough:
+
+> Fais l'inventaire clean-room de « C:\Program Files\<Logiciel> » avec le
+> projet universal-asset-ripper (skill clean-room-port), puis le port Rust.
 
 ## Lessons
 
