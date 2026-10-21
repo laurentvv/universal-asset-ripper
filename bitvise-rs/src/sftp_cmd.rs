@@ -27,8 +27,11 @@ pub struct SftpShell {
     show_progress: bool,
 }
 
-/// Open the SFTP subsystem and resolve the starting directories.
-pub async fn open_shell(handle: &mut Handle<ClientHandler>, bvc: &BvcOpts) -> Result<SftpShell> {
+/// Open a raw SFTP session on a new channel (shared by the CLI shell and
+/// the bvrs-gui front-end).
+pub async fn open_session(
+    handle: &mut Handle<ClientHandler>,
+) -> Result<SftpSession> {
     let channel = handle
         .channel_open_session()
         .await
@@ -37,9 +40,14 @@ pub async fn open_shell(handle: &mut Handle<ClientHandler>, bvc: &BvcOpts) -> Re
         .request_subsystem(true, "sftp")
         .await
         .map_err(|e| anyhow!("requesting sftp subsystem: {e}"))?;
-    let sftp = SftpSession::new(channel.into_stream())
+    SftpSession::new(channel.into_stream())
         .await
-        .map_err(|e| anyhow!("starting SFTP session: {e}"))?;
+        .map_err(|e| anyhow!("starting SFTP session: {e}"))
+}
+
+/// Open the SFTP subsystem and resolve the starting directories.
+pub async fn open_shell(handle: &mut Handle<ClientHandler>, bvc: &BvcOpts) -> Result<SftpShell> {
+    let sftp = open_session(handle).await?;
     let remote_cwd = sftp
         .canonicalize(".")
         .await

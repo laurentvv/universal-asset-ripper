@@ -15,3 +15,6 @@ tokio = { version = "1.54.0", features = ["full"] }
 [dev-dependencies]
 rand = "0.10.3"
 tempfile = "3.27.0"
+
+[workspace]
+members = ["bvrs-gui"]
