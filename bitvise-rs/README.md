@@ -128,6 +128,10 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
+To try bvrs locally without a real server: `cargo run --example mock-sshd`
+starts a mock SSH/SFTP server (user `test`, password `secret`) on
+127.0.0.1:2222 with an SFTP root under %TEMP%.
+
 The integration tests spin up an in-process SSH + SFTP server (russh server
 side, backed by a temp directory) and drive the **real `bvrs` binary**
 against it: password auth, publickey auth, TOFU known_hosts persistence,

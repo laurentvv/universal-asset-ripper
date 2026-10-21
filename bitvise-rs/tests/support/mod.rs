@@ -3,6 +3,10 @@
 //! Auth: user `test`, password `secret`, any public key.
 //! Exec: canned commands `echo hello`, `fail 3`, `cat` (echoes stdin).
 //! SFTP: real filesystem operations rooted at a temp directory.
+//!
+//! Also included by `examples/mock-sshd.rs`, where most helpers are
+//! unused — hence the file-wide allow.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -66,6 +70,14 @@ pub struct TestServer {
 
 /// Start a test server on 127.0.0.1 with a random port.
 pub async fn start() -> Result<TestServer> {
+    let root = tempfile::tempdir()?.keep();
+    let addr: SocketAddr = ([127, 0, 0, 1], 0).into();
+    start_on(addr, root).await
+}
+
+/// Start the test server bound to `addr` with SFTP rooted at `root`
+/// (used by tests via `start` and by `examples/mock-sshd.rs`).
+pub async fn start_on(addr: SocketAddr, root: PathBuf) -> Result<TestServer> {
     let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
     let fingerprint = key
         .public_key()
@@ -78,9 +90,8 @@ pub async fn start() -> Result<TestServer> {
         ..Default::default()
     });
 
-    let socket = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let socket = TcpListener::bind(addr).await?;
     let addr = socket.local_addr()?;
-    let root = tempfile::tempdir()?.keep();
 
     let events = Events::default();
     let mut server = Supervisor {
