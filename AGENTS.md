@@ -100,6 +100,10 @@ The dependency (`duckdb>=1.1.0`) is declared inside the script (PEP 723): uv bui
 ### Pitfalls & lessons (dated format)
 - **[YYYY-MM-DD] context** — rule kept. *(Lessons live HERE, never in the common block: it is overwritten on every sync.)*
 
+### CI / GitHub Actions
+
+No GitHub Actions: this repository publishes no GitHub releases, so it carries no workflows — never create `.github/workflows/` files, CI badges or release automation. Validation runs locally.
+
 ### References
 - Long context: `PROJECT_MEMORY.md` / `docs/memory_bank/…`
 - Cross-repo ecosystem: *(single shared source — do not duplicate it here)*
