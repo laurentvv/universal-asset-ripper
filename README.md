@@ -73,10 +73,9 @@ embedded help; never decompilation):
 Packaged as the **`clean-room-port` skill** (`.zcode/skills/` in this
 repository), documented in
 [docs/workflow-clean-room-reimplementation.md](docs/workflow-clean-room-reimplementation.md).
-Worked example: the **Bitvise SSH Client** port — CLI + egui GUI + Bitvise
-option compatibility — in [`bitvise-rs/`](bitvise-rs/README.md), with its
-[precise inventory](bitvise-rs/docs/inventory.md) (16 executables, 57
-decoded dialogs).
+Worked examples:
+- the **Bitvise SSH Client** port — CLI + egui GUI + Bitvise option compatibility — in [`bitvise-rs/`](bitvise-rs/README.md), with its [precise inventory](bitvise-rs/docs/inventory.md).
+- the **Notepad++** port — `npp-core` + `npp-cli` + `npp-gui` (multi-tab editor, line endings, encodings, search) in modern Rust 1.99.1 (`d:\git\notepadpp-rs`), with its [inventory](docs/notepadpp-inventory.md).
 
 ## 🏗️ Architecture
 

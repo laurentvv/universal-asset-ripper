@@ -7,6 +7,10 @@ language. Proven on two ports:
 - **TreeSize Free → dirsize** (C++): concept-only port (directory size analysis).
 - **Bitvise SSH Client → bvrs / bvrs-gui** (Rust): CLI tools + command-line
   compatibility layer + GUI, from the installed 9.66 suite.
+- **Notepad++ → notepadpp-rs / npp** (Rust): Scintilla-compatible buffer,
+  encodings (UTF-8, UTF-16, ANSI), CRLF/LF line endings, search & replace,
+  Notepad++ CLI flags compatibility, and egui tabbed GUI, from the installed
+  8.9.8.1 suite (in `d:\git\notepadpp-rs`).
 
 ## Principles
 

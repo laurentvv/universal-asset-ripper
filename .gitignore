@@ -48,6 +48,7 @@ Thumbs.db
 !tests/fixtures/**
 coverage/
 .agent/*.duckdb.wal
+.scratch/
 # Agent local state (ledger, installed skills) - kept on disk, never committed
 .agent/
 .agents/
