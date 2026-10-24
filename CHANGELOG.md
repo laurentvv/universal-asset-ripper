@@ -3,6 +3,7 @@
 ## Unreleased (lots 1-3)
 
 ### Lot 3 - Hardening and tooling
+- Lean RE skill (`.zcode/skills/leanrea`) and REAP structured prompt catalog (`docs/rea-prompts.md`) integrating zero-MCP reverse engineering and evidence-backed prompt methodology.
 - MCP: optional allow-list of root directories (`UAR_ALLOWED_ROOTS`, `ripper mcp --root <dir>`); all path arguments are checked after symlink resolution.
 - New `ripper doctor [--json]` command (Node, repak, AssetRipper, rea).
 - ESLint flat config (`npm run lint`), coverage (`npm run test:coverage`), `clean` script, `files` whitelist in package.json, `.gitattributes` (LF).

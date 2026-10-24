@@ -66,7 +66,8 @@ export class ReaBridge {
       scan.il2cppMetadata
         ? `IL2CPP metadata detected (version ${scan.il2cppMetadata.version}). Reconstruct CIL bytecode with Cpp2IL or trace il2cpp_init.`
         : "Standard native binary.",
-      "Objective: Confirm decryption keys / recovery offsets."
+      "Objective: Confirm decryption keys / recovery offsets.",
+      "Methodology: Separate findings into [Confirmed Facts], [Inferences], and [Unknowns]. Cite offsets/functions for evidence."
     ].join("\n");
 
     const bundle: ReaEvidenceBundle = {

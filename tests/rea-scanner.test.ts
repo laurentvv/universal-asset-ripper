@@ -74,6 +74,9 @@ describe("BinaryScanner & ReaBridge", () => {
     expect(bundle.findings.candidateAesKeys.length).toBeGreaterThan(0);
     expect(bundle.findings.candidateTotal).toBe(1);
     expect(bundle.reaTaskPrompt).toContain("Candidate AES keys detected");
+    expect(bundle.reaTaskPrompt).toContain(
+      "Methodology: Separate findings into [Confirmed Facts], [Inferences], and [Unknowns]"
+    );
   });
 
   describe("false positive filtering", () => {

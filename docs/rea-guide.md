@@ -143,4 +143,30 @@ Universal Asset Ripper feeds directly into **[rehan-remade/universal-modder](htt
 
 * **MCP Synergy:** AI agents configured with both Universal Asset Ripper's MCP tools and `universal-modder` skills can run complete end-to-end game modding loops automatically: from package sniffing and AES decryption to asset regeneration and live in-game testing.
 
+---
+
+## 7. The Zero-MCP Philosophy: Lean Reverse Engineering (`leanrea`)
+
+While REA historically relies on a heavy MCP server exposing over 200 individual tools (consuming upwards of 400k tokens just to load tool definitions), **Universal Asset Ripper** embraces the **lean execution philosophy** popularized by **[aicodeking/leanrea](https://github.com/aicodeking/leanrea)**:
+
+1. **Native Parsers vs. MCP Bloat:** Universal Asset Ripper provides zero-dependency pure TypeScript parsers for Godot PCK, Unreal PAK (v1-v11 with AES-256), Electron ASAR/resources.pak, and Windows PE resources. These run in milliseconds via direct CLI invocations.
+2. **Minimal MCP Surface:** When used in MCP mode, Universal Asset Ripper exposes only **4 focused high-level tools** (`ripper_detect`, `ripper_inspect`, `ripper_extract`, `ripper_scan_binary`), keeping context overhead near zero.
+3. **Agent Skill Integration:** Agents in this repository can use the [`.zcode/skills/leanrea/SKILL.md`](../.zcode/skills/leanrea/SKILL.md) skill to drive native CLI tools (`ripper`, `file`, `strings`, `nm`, `rg -uu`, `otool`, `objdump`, `go version -m`) via plain shell commands, achieving 38% faster runs and 35% lower cost compared to multi-tool MCP frameworks.
+
+---
+
+## 8. Structured Agent Prompts (REAP Methodology)
+
+To prevent AI hallucination and ensure evidence-backed reverse engineering findings, follow the **REAP (Reverse Engineering Agent Prompts)** methodology derived from **[JoasASantos/REA-Prompts](https://github.com/JoasASantos/REA-Prompts)**:
+
+* **One feature per prompt**: Keep analysis focused on a single subsystem, function, or encryption scheme.
+* **The 3-bucket classification**:
+  - `[Confirmed Facts]`: Proven by cited offsets, strings, or disassembly opcodes.
+  - `[Inferences]`: Deductions logically inferred from confirmed facts.
+  - `[Unknowns]`: Questions that static inspection has not yet resolved.
+* **Deliverable-oriented**: Conclude investigations with an executable test harness, a behavioral specification (`SPEC.md`), or an [`INVESTIGATION.md`](rea-prompts.md#long-running-investigation-investigationmd-template) progress log.
+
+👉 **See the complete prompt catalog in [REAP: Reverse Engineering Agent Prompts & Investigation Methodology](rea-prompts.md).**
+
+
 

@@ -239,6 +239,9 @@ Universal Asset Ripper forms the upstream reconnaissance and extraction hub with
 * 📘 [Detailed Architecture](docs/architecture.md)
 * 📗 [Engine Deep Dive & Tooling Guide](docs/engines.md)
 * 📙 [REA & AI Agent Integration Guide](docs/rea-guide.md)
+* 📕 [REAP Prompts & Investigation Methodology](docs/rea-prompts.md)
+* ⚡ [Lean RE Skill (`leanrea`)](.zcode/skills/leanrea/SKILL.md)
+* 🛡️ [Clean-Room Porting Skill](.zcode/skills/clean-room-port/SKILL.md)
 
 ---
 
