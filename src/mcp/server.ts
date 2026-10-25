@@ -11,6 +11,8 @@ import { AdapterRegistry } from "../adapters/index.js";
 import { ReaBridge } from "../rea/rea-bridge.js";
 import { ASSET_CATEGORIES, type AssetCategory } from "../types/index.js";
 import { validateCategories } from "../utils/file-utils.js";
+import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
+import type { DecompilerBackendType } from "../decompiler/types.js";
 
 const DEFAULT_INSPECT_LIMIT = 200;
 
@@ -176,6 +178,46 @@ export async function callTool(name: string, args: ToolArgs) {
       return jsonResult(await ReaBridge.inspectBinary(binaryPath, { pakPath }));
     }
 
+    if (name === "ripper_decompiler_status") {
+      return jsonResult(await DecompilerRegistry.getAvailableBackends());
+    }
+
+    if (name === "ripper_disassemble") {
+      const binaryPath = requireString(args, "binaryPath");
+      await assertAllowed("binaryPath", binaryPath);
+      const functionOrAddress = optionalString(args, "functionOrAddress");
+      const backend = optionalString(args, "backend") as DecompilerBackendType | undefined;
+      const count = typeof args?.count === "number" ? args.count : undefined;
+      const syntax = (args?.syntax === "att" ? "att" : "intel") as "intel" | "att";
+      const result = await DecompilerRegistry.disassemble(binaryPath, {
+        functionOrAddress,
+        backend,
+        count,
+        syntax
+      });
+      return jsonResult(result);
+    }
+
+    if (name === "ripper_dump_symbols") {
+      const binaryPath = requireString(args, "binaryPath");
+      await assertAllowed("binaryPath", binaryPath);
+      const filter = optionalString(args, "filter");
+      const result = await DecompilerRegistry.dumpSymbols(binaryPath, filter);
+      return jsonResult(result);
+    }
+
+    if (name === "ripper_decompile") {
+      const binaryPath = requireString(args, "binaryPath");
+      await assertAllowed("binaryPath", binaryPath);
+      const functionOrAddress = optionalString(args, "functionOrAddress");
+      const backend = optionalString(args, "backend") as DecompilerBackendType | undefined;
+      const result = await DecompilerRegistry.decompile(binaryPath, {
+        functionOrAddress,
+        backend
+      });
+      return jsonResult(result);
+    }
+
     throw new Error(`Unknown tool: ${name}`);
   } catch (err: unknown) {
     return {
@@ -299,6 +341,89 @@ export function createMcpServer(): Server {
               pakPath: {
                 type: "string",
                 description: "Optional Unreal .pak used to verify each candidate key (verified keys are listed first)"
+              }
+            },
+            required: ["binaryPath"]
+          }
+        },
+        {
+          name: "ripper_decompiler_status",
+          description: "List all reverse engineering and decompiler engines (Ghidra, Cutter, Hopper, IDA, Binutils) and their readiness status.",
+          inputSchema: {
+            type: "object",
+            properties: {}
+          }
+        },
+        {
+          name: "ripper_disassemble",
+          description: "Disassemble native binary machine code instructions (via Binutils, Cutter, Ghidra, Hopper, or IDA).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              binaryPath: {
+                type: "string",
+                description: "Path to the binary file (.exe, .dll, ELF, Mach-O)"
+              },
+              functionOrAddress: {
+                type: "string",
+                description: "Function name or hexadecimal address to start disassembling"
+              },
+              backend: {
+                type: "string",
+                enum: ["auto", "binutils", "cutter", "ghidra", "hopper", "ida"],
+                description: "Decompiler engine backend to use (defaults to 'auto')"
+              },
+              count: {
+                type: "integer",
+                minimum: 1,
+                maximum: 5000,
+                description: "Maximum number of instructions to disassemble (default 100)"
+              },
+              syntax: {
+                type: "string",
+                enum: ["intel", "att"],
+                description: "Assembly syntax flavour (default 'intel')"
+              }
+            },
+            required: ["binaryPath"]
+          }
+        },
+        {
+          name: "ripper_dump_symbols",
+          description: "Dump symbols (functions, global data, imports, exports) from an executable or library.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              binaryPath: {
+                type: "string",
+                description: "Path to the binary file (.exe, .dll, ELF, Mach-O)"
+              },
+              filter: {
+                type: "string",
+                description: "Optional substring filter to match symbol names"
+              }
+            },
+            required: ["binaryPath"]
+          }
+        },
+        {
+          name: "ripper_decompile",
+          description: "Decompile binary machine code to high-level C / pseudocode using Ghidra, Cutter, or IDA.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              binaryPath: {
+                type: "string",
+                description: "Path to the binary file (.exe, .dll, ELF, Mach-O)"
+              },
+              functionOrAddress: {
+                type: "string",
+                description: "Function name or address to decompile"
+              },
+              backend: {
+                type: "string",
+                enum: ["auto", "ghidra", "cutter", "ida"],
+                description: "Decompiler engine to use"
               }
             },
             required: ["binaryPath"]

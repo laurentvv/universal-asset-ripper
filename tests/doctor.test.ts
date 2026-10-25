@@ -10,7 +10,17 @@ describe("doctor", () => {
   it("reports node and optional tools", async () => {
     const report = await runDoctor({ PATH: "" });
     const names = report.checks.map((c) => c.name);
-    expect(names).toEqual(["node", "repak", "AssetRipper", "rea"]);
+    expect(names).toEqual([
+      "node",
+      "repak",
+      "AssetRipper",
+      "rea",
+      "ghidra",
+      "cutter",
+      "hopper",
+      "ida",
+      "binutils"
+    ]);
     const node = report.checks[0];
     expect(node.found).toBe(true);
     expect(node.version).toBe(process.versions.node);

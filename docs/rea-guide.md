@@ -219,6 +219,30 @@ npm run sync:rea -- --force
 4. **Agent Skills Synchronization:** Automatically updates the official skills (`reverse-engineer-anything`, `rea-analysis-optimization`, etc.) in [`.zcode/skills/`](../.zcode/skills/) and `.agents/skills/`.
 5. **Post-Sync Verification:** Prompts to run `npm test` and `npm run lint` on the parent repository.
 
+---
+
+## 11. Multi-Engine Decompilers & Disassembly Backends
+
+Universal Asset Ripper integrates 5 decompiler and disassembly backends orchestrated through `DecompilerRegistry`:
+- **NSA Ghidra** (Sleigh C decompiler)
+- **Cutter / Rizin** (Open-source RE platform & Ghidra decompiler plugin)
+- **Hopper Disassembler** (macOS, Linux, Windows x86/ARM disassembly)
+- **IDA Pro / Hex-Rays** (Batch mode execution)
+- **GNU Binutils** (Zero-install baseline: `objdump`, `nm`, `strings` from MSYS2/PATH)
+
+### CLI Commands:
+```bash
+ripper decompilers      # Inspect engines
+ripper disasm <target>  # Disassemble machine instructions
+ripper symbols <target> # Extract symbol tables & imported APIs
+ripper decompile <tgt>  # Decompile to C with Ghidra/Cutter
+```
+
+For complete setup guides and the full reverse engineering pipeline, see:
+- [Decompiler Backends Guide](decompiler-guide.md)
+- [Complete Functional REA Workflow](workflow-rea-complete.md)
+
+
 
 
 

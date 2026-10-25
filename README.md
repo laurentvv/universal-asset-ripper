@@ -176,6 +176,26 @@ ripper rea-inspect Game-Win64-Shipping.exe --pak Content/Paks/PakChunk0.pak --bu
 ripper rea-inspect Game-Win64-Shipping.exe --json   # { scan, bundle }
 ```
 
+### 5. Multi-Engine Disassembly & Decompilation
+Drive **GNU Binutils**, **NSA Ghidra**, **Cutter/Rizin**, **Hopper**, and **IDA Pro**:
+```bash
+# List all 5 decompiler engines and readiness status
+ripper decompilers
+
+# Disassemble binary machine code (Intel syntax with opcodes & offsets)
+ripper disasm "C:/Program Files/Notepad++/notepad++.exe" -n 50
+
+# Dump symbols, functions, and imported DLL APIs
+ripper symbols "C:/Program Files/Notepad++/notepad++.exe" --filter "Create"
+
+# Decompile a function to C pseudocode with Ghidra
+ripper decompile "target.exe" -f "MainEntryPoint" --backend ghidra -o ./decompiled.c
+
+# Run setup guide for external engines
+npm run setup:decompilers
+```
+See the detailed [Decompiler Guide](docs/decompiler-guide.md) and [Complete Functional REA Workflow](docs/workflow-rea-complete.md).
+
 All commands accept `--json` (pure JSON on stdout).
 
 ### Honest limitations
