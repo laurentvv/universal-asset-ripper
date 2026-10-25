@@ -2,11 +2,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { EngineDetector } from "../core/detector/engine-detector.js";
 import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
+import type { DisassembledInstruction } from "../decompiler/types.js";
 import { PeResourceParser } from "../parsers/pe/pe-resource-parser.js";
 
 export interface ExecutableAuditSummary {
   name: string;
   relativePath: string;
+  fullPath: string;
   sizeBytes: number;
   architecture?: string;
   isPrimary: boolean;
@@ -17,15 +19,19 @@ export interface ExecutableAuditSummary {
   iconCount: number;
   hasManifest: boolean;
   version?: Record<string, string>;
+  entryPointDisassembly: DisassembledInstruction[];
+  decompiledFunctions?: Record<string, string>;
 }
 
 export interface SiblingDllAuditSummary {
   name: string;
   relativePath: string;
+  fullPath: string;
   sizeBytes: number;
   exportedFunctions: string[];
   importedDlls: string[];
   purposeInferred: string;
+  decompiledFunctions?: Record<string, string>;
 }
 
 export interface ConfigFileSummary {
@@ -48,11 +54,15 @@ export interface ApplicationAuditReport {
   siblingDlls: SiblingDllAuditSummary[];
   assetContainers: string[];
   configurationModels: ConfigFileSummary[];
+  decompilationEngineAvailable: boolean;
+  decompilationBackend: string;
   summary: {
     totalDialogs: number;
     totalIcons: number;
     totalCliFlags: number;
     totalPluginExports: number;
+    totalDisassembledInstructions: number;
+    totalDecompiledFunctions: number;
   };
   recommendations: string[];
 }
@@ -60,6 +70,8 @@ export interface ApplicationAuditReport {
 export interface AuditOptions {
   maxDepth?: number;
   extractResources?: boolean;
+  decompile?: boolean;
+  disassembleCount?: number;
   outputDir?: string;
 }
 
@@ -77,8 +89,11 @@ export class ApplicationAuditor {
       throw new Error(`Target is not a directory: ${resolvedDir}`);
     }
 
-    // 1. Detect Engine
+    // 1. Detect Engine & check decompiler availability
     const engineResult = await EngineDetector.detect(resolvedDir);
+    const backends = await DecompilerRegistry.getAvailableBackends();
+    const decompilerReady = backends.some((b) => b.found && b.capabilities.decompilation);
+    const activeDisassembler = backends.find((b) => b.found)?.id ?? "none";
 
     // 2. Discover all files
     const allFiles: { fullPath: string; relPath: string; size: number }[] = [];
@@ -118,10 +133,10 @@ export class ApplicationAuditor {
       }
     }
 
-    // 3. Audit Executables
+    // 3. Audit Executables & Disassemble EntryPoints
     const executables: ExecutableAuditSummary[] = [];
     for (const exe of exeFiles) {
-      const summary = await this.auditExecutable(exe.fullPath, exe.relPath, exe.size);
+      const summary = await this.auditExecutable(exe.fullPath, exe.relPath, exe.size, options);
       executables.push(summary);
     }
 
@@ -134,10 +149,10 @@ export class ApplicationAuditor {
       primary.isPrimary = true;
     }
 
-    // 4. Audit Sibling DLLs
+    // 4. Audit Sibling DLLs & Disassemble Plugin Exports
     const siblingDlls: SiblingDllAuditSummary[] = [];
     for (const dll of dllFiles) {
-      const summary = await this.auditDll(dll.fullPath, dll.relPath, dll.size);
+      const summary = await this.auditDll(dll.fullPath, dll.relPath, dll.size, options);
       siblingDlls.push(summary);
     }
 
@@ -172,22 +187,63 @@ export class ApplicationAuditor {
       };
     });
 
-    // 6. Summarize & Generate Recommendations
+    // 6. Targeted Decompilation (Phase 4b) if requested
+    const recommendations: string[] = [];
+    let totalDecompiledFunctions = 0;
+    if (options.decompile) {
+      if (decompilerReady) {
+        // Decompile primary executable entrypoint/WinMain
+        if (primary) {
+          primary.decompiledFunctions = {};
+          try {
+            const decResult = await DecompilerRegistry.decompile(primary.fullPath, {
+              functionOrAddress: "WinMain"
+            });
+            primary.decompiledFunctions["WinMain"] = decResult.code;
+            totalDecompiledFunctions++;
+          } catch {
+            // fallback
+          }
+        }
+        // Decompile key exported functions of plugins
+        for (const dll of siblingDlls) {
+          dll.decompiledFunctions = {};
+          for (const fn of dll.exportedFunctions.slice(0, 3)) {
+            try {
+              const decResult = await DecompilerRegistry.decompile(dll.fullPath, {
+                functionOrAddress: fn
+              });
+              dll.decompiledFunctions[fn] = decResult.code;
+              totalDecompiledFunctions++;
+            } catch {
+              // ignore
+            }
+          }
+        }
+      } else {
+        recommendations.push(
+          "Decompilation requested (--decompile) but no C decompiler engine was detected. Run 'npm run setup:decompilers' to install and configure Ghidra or Cutter."
+        );
+      }
+    }
+
+    // 7. Summarize & Generate Recommendations
     let totalDialogs = 0;
     let totalIcons = 0;
     let totalCliFlags = 0;
     let totalPluginExports = 0;
+    let totalDisassembledInstructions = 0;
 
     for (const exe of executables) {
       totalDialogs += exe.dialogCount;
       totalIcons += exe.iconCount;
       totalCliFlags += exe.cliFlags.length;
+      totalDisassembledInstructions += exe.entryPointDisassembly.length;
     }
     for (const dll of siblingDlls) {
       totalPluginExports += dll.exportedFunctions.length;
     }
 
-    const recommendations: string[] = [];
     if (totalDialogs > 0) {
       recommendations.push(
         `Discovered ${totalDialogs} embedded Win32 dialog templates. Extract them to JSON schemas to mirror UI layouts.`
@@ -201,6 +257,11 @@ export class ApplicationAuditor {
     if (siblingDlls.length > 0) {
       recommendations.push(
         `Detected ${siblingDlls.length} sibling DLLs / plugins with ${totalPluginExports} exported functions. Reimplement these as native modular sub-crates or plugins.`
+      );
+    }
+    if (totalDisassembledInstructions > 0) {
+      recommendations.push(
+        `Extracted ${totalDisassembledInstructions} machine instructions from EntryPoint. Use 'ripper decompile' with Ghidra or Cutter to generate high-level C prototypes.`
       );
     }
     const syntaxConfigs = configurationModels.filter((c) => c.category === "syntax-language");
@@ -225,21 +286,45 @@ export class ApplicationAuditor {
       siblingDlls,
       assetContainers,
       configurationModels,
+      decompilationEngineAvailable: decompilerReady,
+      decompilationBackend: activeDisassembler,
       summary: {
         totalDialogs,
         totalIcons,
         totalCliFlags,
-        totalPluginExports
+        totalPluginExports,
+        totalDisassembledInstructions,
+        totalDecompiledFunctions
       },
       recommendations
     };
 
-    // If output dir specified, write JSON and Markdown report
+    // If output dir specified, write JSON, Markdown report and decompiled code
     if (options.outputDir) {
       const outDir = path.resolve(options.outputDir);
       await fs.mkdir(outDir, { recursive: true });
       await fs.writeFile(path.join(outDir, "audit-report.json"), JSON.stringify(report, null, 2), "utf-8");
       await fs.writeFile(path.join(outDir, "audit-report.md"), this.generateMarkdownReport(report), "utf-8");
+
+      if (totalDecompiledFunctions > 0) {
+        const decBaseDir = path.join(outDir, "decompiled");
+        if (primary?.decompiledFunctions) {
+          const exeDecDir = path.join(decBaseDir, primary.name);
+          await fs.mkdir(exeDecDir, { recursive: true });
+          for (const [fnName, code] of Object.entries(primary.decompiledFunctions)) {
+            await fs.writeFile(path.join(exeDecDir, `${fnName}.c`), code, "utf-8");
+          }
+        }
+        for (const dll of siblingDlls) {
+          if (dll.decompiledFunctions && Object.keys(dll.decompiledFunctions).length > 0) {
+            const dllDecDir = path.join(decBaseDir, path.basename(dll.name, path.extname(dll.name)));
+            await fs.mkdir(dllDecDir, { recursive: true });
+            for (const [fnName, code] of Object.entries(dll.decompiledFunctions)) {
+              await fs.writeFile(path.join(dllDecDir, `${fnName}.c`), code, "utf-8");
+            }
+          }
+        }
+      }
     }
 
     return report;
@@ -278,7 +363,8 @@ export class ApplicationAuditor {
   private static async auditExecutable(
     fullPath: string,
     relPath: string,
-    size: number
+    size: number,
+    options: AuditOptions
   ): Promise<ExecutableAuditSummary> {
     // 1. Strings: discover CLI switches
     const strings = await DecompilerRegistry.extractStrings(fullPath, 4);
@@ -316,9 +402,21 @@ export class ApplicationAuditor {
       // ignore
     }
 
+    // 4. Disassemble EntryPoint
+    let entryPointDisassembly: DisassembledInstruction[] = [];
+    try {
+      const disRes = await DecompilerRegistry.disassemble(fullPath, {
+        count: options.disassembleCount ?? 15
+      });
+      entryPointDisassembly = disRes.instructions;
+    } catch {
+      // ignore
+    }
+
     return {
       name: path.basename(fullPath),
       relativePath: relPath,
+      fullPath,
       sizeBytes: size,
       architecture: arch,
       isPrimary: false,
@@ -327,14 +425,16 @@ export class ApplicationAuditor {
       importedFunctionCount: symbolsResult.totalCount,
       dialogCount,
       iconCount,
-      hasManifest
+      hasManifest,
+      entryPointDisassembly
     };
   }
 
   private static async auditDll(
     fullPath: string,
     relPath: string,
-    size: number
+    size: number,
+    _options: AuditOptions
   ): Promise<SiblingDllAuditSummary> {
     const symbolsResult = await DecompilerRegistry.dumpSymbols(fullPath);
     const exportedFunctions: string[] = [];
@@ -357,6 +457,7 @@ export class ApplicationAuditor {
     return {
       name: path.basename(fullPath),
       relativePath: relPath,
+      fullPath,
       sizeBytes: size,
       exportedFunctions,
       importedDlls: Array.from(importedDllsSet),
@@ -371,6 +472,7 @@ export class ApplicationAuditor {
     lines.push(`**Target Directory:** \`${report.targetDirectory}\``);
     lines.push(`**Engine Detected:** ${report.engine} (Confidence: ${Math.round(report.confidence * 100)}%)`);
     lines.push(`**Total Files:** ${report.totalFiles.toLocaleString()} (${(report.totalSizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+    lines.push(`**Active Disassembler Engine:** \`${report.decompilationBackend.toUpperCase()}\` (Decompilation Engine: ${report.decompilationEngineAvailable ? "Ready" : "Standby - install Ghidra/Cutter"})`);
     lines.push("");
 
     lines.push("## Summary of Discovered Assets & Contracts");
@@ -378,18 +480,34 @@ export class ApplicationAuditor {
     lines.push(`- **Embedded Icons:** ${report.summary.totalIcons}`);
     lines.push(`- **Discovered CLI Switches:** ${report.summary.totalCliFlags}`);
     lines.push(`- **Sibling DLLs & Plugins:** ${report.siblingDlls.length} (${report.summary.totalPluginExports} exported functions)`);
+    lines.push(`- **EntryPoint Instructions Disassembled:** ${report.summary.totalDisassembledInstructions}`);
+    lines.push(`- **Decompiled C Functions:** ${report.summary.totalDecompiledFunctions}`);
     lines.push(`- **Configuration Models:** ${report.configurationModels.length}`);
     lines.push("");
 
     if (report.primaryExecutable) {
       lines.push("## Primary Executable");
       lines.push(`- **Binary:** \`${report.primaryExecutable.name}\` (${(report.primaryExecutable.sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+      lines.push(`- **Architecture:** ${report.primaryExecutable.architecture ?? "x64"}`);
       lines.push(`- **Imported DLLs:** ${report.primaryExecutable.importedDlls.join(", ")}`);
       lines.push(`- **Imported Functions:** ${report.primaryExecutable.importedFunctionCount}`);
       if (report.primaryExecutable.cliFlags.length > 0) {
         lines.push(`- **CLI Flags:** \`${report.primaryExecutable.cliFlags.slice(0, 15).join("`, `")}\``);
       }
       lines.push("");
+
+      if (report.primaryExecutable.entryPointDisassembly.length > 0) {
+        lines.push("### EntryPoint Disassembly Preview");
+        lines.push("```x86asm");
+        for (const inst of report.primaryExecutable.entryPointDisassembly.slice(0, 12)) {
+          const addr = inst.address.padEnd(16);
+          const mnem = inst.mnemonic.padEnd(10);
+          const ops = inst.operands ?? "";
+          lines.push(`${addr} ${mnem} ${ops}`);
+        }
+        lines.push("```");
+        lines.push("");
+      }
     }
 
     if (report.siblingDlls.length > 0) {
@@ -401,6 +519,30 @@ export class ApplicationAuditor {
         }
       }
       lines.push("");
+    }
+
+    if (report.summary.totalDecompiledFunctions > 0) {
+      lines.push("## Decompiled C Pseudocode (Phase 4b)");
+      if (report.primaryExecutable?.decompiledFunctions) {
+        for (const [fnName, code] of Object.entries(report.primaryExecutable.decompiledFunctions)) {
+          lines.push(`### \`${report.primaryExecutable.name}\` -> \`${fnName}\``);
+          lines.push("```c");
+          lines.push(code.slice(0, 1000) + (code.length > 1000 ? "\n// ... [truncated for preview]" : ""));
+          lines.push("```");
+          lines.push("");
+        }
+      }
+      for (const dll of report.siblingDlls) {
+        if (dll.decompiledFunctions && Object.keys(dll.decompiledFunctions).length > 0) {
+          for (const [fnName, code] of Object.entries(dll.decompiledFunctions)) {
+            lines.push(`### Plugin \`${dll.name}\` -> \`${fnName}\``);
+            lines.push("```c");
+            lines.push(code.slice(0, 1000) + (code.length > 1000 ? "\n// ... [truncated for preview]" : ""));
+            lines.push("```");
+            lines.push("");
+          }
+        }
+      }
     }
 
     if (report.configurationModels.length > 0) {

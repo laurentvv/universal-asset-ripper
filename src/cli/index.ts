@@ -533,14 +533,16 @@ program
   .description("Run automated end-to-end reverse engineering, asset discovery, PE resource extraction, and multi-binary audit on a directory")
   .option("-o, --output <dir>", "Directory where audit-report.json and audit-report.md will be saved")
   .option("--max-depth <number>", "Maximum directory recursion depth", (v) => parseInt(v, 10), 4)
+  .option("--decompile", "Run targeted C decompilation on key functions via Ghidra/Cutter if available", false)
   .option("--json", "Print output as JSON")
-  .action(async (targetDir: string, opts: { output?: string; maxDepth: number; json?: boolean }) => {
+  .action(async (targetDir: string, opts: { output?: string; maxDepth: number; decompile?: boolean; json?: boolean }) => {
     const spinner = startSpinner(`Running automated application audit on: ${chalk.cyan(targetDir)}...`, opts.json);
     try {
       const resolved = path.resolve(targetDir);
       const report = await ApplicationAuditor.auditDirectory(resolved, {
         outputDir: opts.output,
-        maxDepth: opts.maxDepth
+        maxDepth: opts.maxDepth,
+        decompile: opts.decompile
       });
 
       if (opts.json) {
@@ -565,6 +567,12 @@ program
       console.log(`   ✔ ${chalk.bold("Discovered CLI Flags:")} ${chalk.green(report.summary.totalCliFlags)} flags`);
       console.log(`   ✔ ${chalk.bold("Sibling DLLs & Plugins:")} ${chalk.green(report.siblingDlls.length)} libraries (${report.summary.totalPluginExports} exports)`);
       console.log(`   ✔ ${chalk.bold("Config Models:")}        ${chalk.green(report.configurationModels.length)} XML/JSON/YAML models`);
+      console.log(`   ✔ ${chalk.bold("EntryPoint Disassembly:")} ${chalk.green(report.summary.totalDisassembledInstructions)} instructions (${report.decompilationBackend.toUpperCase()})`);
+      if (report.summary.totalDecompiledFunctions > 0) {
+        console.log(`   ✔ ${chalk.bold("Decompiled Functions:")}  ${chalk.green(report.summary.totalDecompiledFunctions)} functions exported to C`);
+      } else {
+        console.log(`   - ${chalk.bold("Decompilation Engine:")}  ${report.decompilationEngineAvailable ? chalk.green("Ready (Ghidra/Cutter)") : chalk.yellow("Standby (Pass --decompile or install Ghidra)")}`);
+      }
 
       if (report.primaryExecutable) {
         console.log();

@@ -11,6 +11,10 @@ describe("ApplicationAuditor Pipeline", () => {
     expect(report.targetDirectory).toBe(repoRoot);
     expect(report.totalFiles).toBeGreaterThan(0);
     expect(report.timestamp).toBeDefined();
+    expect(report.decompilationBackend).toBeDefined();
+    expect(typeof report.decompilationEngineAvailable).toBe("boolean");
+    expect(typeof report.summary.totalDisassembledInstructions).toBe("number");
+    expect(typeof report.summary.totalDecompiledFunctions).toBe("number");
     expect(Array.isArray(report.configurationModels)).toBe(true);
     expect(Array.isArray(report.recommendations)).toBe(true);
   });

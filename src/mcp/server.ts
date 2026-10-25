@@ -225,9 +225,11 @@ export async function callTool(name: string, args: ToolArgs) {
       const outputDir = optionalString(args, "outputDir");
       if (outputDir) await assertAllowed("outputDir", outputDir);
       const maxDepth = typeof args?.maxDepth === "number" ? args.maxDepth : undefined;
+      const decompile = typeof args?.decompile === "boolean" ? args.decompile : undefined;
       const result = await ApplicationAuditor.auditDirectory(targetDir, {
         outputDir,
-        maxDepth
+        maxDepth,
+        decompile
       });
       return jsonResult(result);
     }
@@ -462,6 +464,10 @@ export function createMcpServer(): Server {
                 minimum: 1,
                 maximum: 10,
                 description: "Maximum directory recursion depth (default 4)"
+              },
+              decompile: {
+                type: "boolean",
+                description: "Run targeted decompilation on key functions via Ghidra/Cutter if available"
               }
             },
             required: ["targetDir"]
