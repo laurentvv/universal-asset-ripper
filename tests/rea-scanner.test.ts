@@ -210,4 +210,22 @@ describe("BinaryScanner & ReaBridge", () => {
       expect(scan.candidateAesKeys[0].verified).toBeNull();
     });
   });
+
+  describe("ReaBridge execution & local detection", () => {
+    it("locates the local REA script in rea/scripts/rea.mjs", () => {
+      const scriptPath = ReaBridge.getLocalReaScriptPath();
+      expect(scriptPath).not.toBeNull();
+      expect(scriptPath).toContain("rea.mjs");
+    });
+
+    it("handles runReaTask gracefully when REA runtime is not compiled", async () => {
+      const bin = path.join(tmpDir, "test.exe");
+      await fs.writeFile(bin, Buffer.alloc(100));
+      const res = await ReaBridge.runReaTask(bin, "Test task");
+      expect(typeof res.success).toBe("boolean");
+      if (!res.success) {
+        expect(res.output).toContain("REA");
+      }
+    });
+  });
 });

@@ -168,5 +168,32 @@ To prevent AI hallucination and ensure evidence-backed reverse engineering findi
 
 👉 **See the complete prompt catalog in [REAP: Reverse Engineering Agent Prompts & Investigation Methodology](rea-prompts.md).**
 
+---
+
+## 9. Complete Vendored REA Engine (`v6.8.0`) & Official Skills
+
+Rather than relying strictly on external installations, the entire **[morluto/rea](https://github.com/morluto/rea)** engine (version **6.8.0**, released 2026-10-25) is now managed directly inside this repository under [`rea/`](../rea):
+
+* **Direct Execution:** `ReaBridge` detects `./rea/scripts/rea.mjs` and invokes the local engine seamlessly, with transparent fallback to global `rea`. You can also run it via `npm run rea -- <command>`.
+* **Complete Multi-Platform Bridges:** Includes Ghidra (`bridge/ghidra/`), Android Jadx (`bridge/android/`), Hopper (`bridge/hopper/`), Cutter (`bridge/cutter/`), and Swift LLDB/UI instrumentation (`bridge/native/`).
+* **Official Agent Skills Attached:**
+  * [`.zcode/skills/reverse-engineer-anything/`](../.zcode/skills/reverse-engineer-anything/SKILL.md) — Master reverse engineering skill (35 KB) backed by 7 comprehensive domain guides:
+    - `native-and-artifacts.md` (38 KB deep SRE reference)
+    - `android-applications.md` (DEX, APK signatures, Jadx, ADB)
+    - `connection-and-recovery.md` (deadlines, budgets, failure triage)
+    - `environments.md` (AgentEnv manifest serving & replay)
+    - `evidence-workflows.md` (canonical Evidence contracts)
+    - `javascript-applications.md` (route maps, bundle unbundling, AST)
+    - `runtime-observation.md` (Frida, GDB, LLDB, process tracing)
+  * [`.zcode/skills/rea-analysis-optimization/`](../.zcode/skills/rea-analysis-optimization/SKILL.md) — Investigation profiling and memory optimization.
+  * [`.zcode/skills/rea-tool-design/`](../.zcode/skills/rea-tool-design/SKILL.md) — Deterministic tool design guidelines.
+* **New in REA 6.8.0:**
+  * **Agent Environments:** Project network captures and Evidence into manifests, build environments from browser scenarios, and serve evidence-gated writes.
+  * **Packaged Application Triage:** Inspect & extract Godot PCK, PyInstaller archives, and Node.js Single Executable Application (SEA) blobs.
+  * **Unity / IL2CPP Metadata (v24/v27):** Member names and literals linking, native methods and generic instances linking, Ghidra seeds export.
+  * **Engine-less PE/ELF Inspection:** Export tables, delay-loads, Authenticode certificates, TLS callbacks/load configuration, ELF notes.
+  * **Ghidra Enhancements:** DOL GameCube/Wii language selection and override conflict detection (`REA_GHIDRA_LANGUAGE_ID`).
+
+
 
 

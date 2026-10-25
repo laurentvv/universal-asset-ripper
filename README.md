@@ -44,6 +44,8 @@ Whether analyzing **Godot** archives, **Unreal Engine** IoStore/PAK containers, 
   - Category filtering (`--categories texture,audio,mesh`) and regex/glob filename filtering (`--filter`).
   - **AES-256** keys (`--aes-key <key>`) for Unreal `.pak` and Godot PCK; `--convert` for Godot textures; Unity export through AssetRipper headless web mode (`ASSETRIPPER_PATH`).
 * 🤖 **AI-Assisted Binary Analysis (`ripper rea-inspect`) :**
+  - Complete vendored **[morluto/rea](https://github.com/morluto/rea)** engine (v6.8.0) under [`rea/`](rea/) with native bridges (Ghidra, Jadx, Hopper, Cutter, Swift LLDB/UI) and direct execution (`npm run rea`).
+  - Official agent skills in [`.zcode/skills/`](.zcode/skills/): `reverse-engineer-anything` (35 KB master skill with 7 domain guides for native SRE, Android, runtime observation, environments), `leanrea`, and `clean-room-port`.
   - The whole file is scanned in overlapping chunks; false positives are filtered (hex runs longer than 64, counting tables, low entropy, repeated blocks) and counts are reported honestly (`N candidates, showing M`).
   - `--pak <file>` verifies every candidate against an Unreal pak (verified keys first); `--bundle <file>` saves the evidence bundle; `--json` prints scan + bundle.
   - Sliding-window Shannon entropy scanning to spot 256-bit encryption keys.
