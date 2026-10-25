@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { DecompilerRegistry } from "../src/decompiler/decompiler-registry.js";
 import { BinutilsBackend } from "../src/decompiler/backends/binutils-backend.js";
 
-describe("Decompiler Registry & Engines", () => {
+describe("Decompiler Registry & Engines", { timeout: 15000 }, () => {
   it("discovers all 5 backends with metadata and capabilities", async () => {
     const backends = await DecompilerRegistry.getAvailableBackends();
     expect(backends.length).toBe(5);

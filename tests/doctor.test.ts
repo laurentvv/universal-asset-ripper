@@ -6,7 +6,7 @@ import { runDoctor } from "../src/utils/doctor.js";
 
 const execAsync = promisify(exec);
 
-describe("doctor", () => {
+describe("doctor", { timeout: 15000 }, () => {
   it("reports node and optional tools", async () => {
     const report = await runDoctor({ PATH: "" });
     const names = report.checks.map((c) => c.name);

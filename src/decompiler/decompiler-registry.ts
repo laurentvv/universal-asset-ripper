@@ -81,10 +81,19 @@ export class DecompilerRegistry {
     options: DecompileOptions & { backend?: DecompilerBackendType } = {}
   ): Promise<DecompileResult> {
     const backend = await this.resolveBackend(options.backend, true);
+    if (backend === "cutter") {
+      return CutterBackend.decompile(binaryPath, options);
+    }
     if (backend === "ghidra") {
       return GhidraBackend.decompile(binaryPath, options);
     }
     throw new Error(`Decompilation driver for backend '${backend}' is being initialized.`);
+  }
+
+  public static async listFunctions(
+    binaryPath: string
+  ): Promise<{ name: string; address: string; size: number }[]> {
+    return CutterBackend.listFunctions(binaryPath);
   }
 
   public static async dumpSymbols(binaryPath: string, filter?: string): Promise<SymbolDumpResult> {

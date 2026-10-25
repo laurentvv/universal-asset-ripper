@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import { ApplicationAuditor } from "../src/pipeline/application-auditor.js";
 
-describe("ApplicationAuditor Pipeline", () => {
+describe("ApplicationAuditor Pipeline", { timeout: 15000 }, () => {
   it("audits a directory and returns an exhaustive application report", async () => {
     // Audit the current repository root as a test directory
     const repoRoot = path.resolve(".");

@@ -50,6 +50,7 @@ export interface DecompileOptions {
   functionOrAddress?: string;
   outputFormat?: "c" | "pseudo" | "json";
   timeoutSeconds?: number;
+  timeoutMs?: number;
 }
 
 export interface DecompileResult {
