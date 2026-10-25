@@ -18,6 +18,8 @@
     "test:watch": "vitest",
     "mcp": "node ./dist/cli/index.js mcp",
     "rea": "node ./rea/scripts/rea.mjs",
+    "sync:rea": "node ./scripts/sync-rea.mjs",
+    "sync:rea:check": "node ./scripts/sync-rea.mjs --check",
     "lint": "eslint .",
     "test:coverage": "vitest run --coverage",
     "clean": "rimraf dist coverage"

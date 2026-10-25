@@ -4,6 +4,7 @@
 
 ### Lot 3 - Hardening and tooling
 - Complete vendored `morluto/rea` (v6.8.0, 2026-10-25) integrated into `rea/` with multi-platform bridges (Ghidra, Jadx, Hopper, Cutter, Swift LLDB/UI), docs, and `npm run rea` entrypoint.
+- Automated upstream sync tool (`scripts/sync-rea.mjs`, `npm run sync:rea:check`, `npm run sync:rea`) to track upstream releases and refresh vendored sources and agent skills.
 - Official REA agent skills attached in `.zcode/skills/`: `reverse-engineer-anything` (with 7 deep domain reference guides for native SRE, Android, runtime observation, environments, evidence), `rea-analysis-optimization`, and `rea-tool-design`.
 - `ReaBridge`: native local resolution of `./rea/scripts/rea.mjs` with graceful fallback to global CLI.
 - Lean RE skill (`.zcode/skills/leanrea`) and REAP structured prompt catalog (`docs/rea-prompts.md`) integrating zero-MCP reverse engineering and evidence-backed prompt methodology.

@@ -45,6 +45,7 @@ Whether analyzing **Godot** archives, **Unreal Engine** IoStore/PAK containers, 
   - **AES-256** keys (`--aes-key <key>`) for Unreal `.pak` and Godot PCK; `--convert` for Godot textures; Unity export through AssetRipper headless web mode (`ASSETRIPPER_PATH`).
 * 🤖 **AI-Assisted Binary Analysis (`ripper rea-inspect`) :**
   - Complete vendored **[morluto/rea](https://github.com/morluto/rea)** engine (v6.8.0) under [`rea/`](rea/) with native bridges (Ghidra, Jadx, Hopper, Cutter, Swift LLDB/UI) and direct execution (`npm run rea`).
+  - Automated upstream sync tool (`npm run sync:rea:check` and `npm run sync:rea`) to track future releases of `morluto/rea` and keep vendored source and agent skills updated automatically.
   - Official agent skills in [`.zcode/skills/`](.zcode/skills/): `reverse-engineer-anything` (35 KB master skill with 7 domain guides for native SRE, Android, runtime observation, environments), `leanrea`, and `clean-room-port`.
   - The whole file is scanned in overlapping chunks; false positives are filtered (hex runs longer than 64, counting tables, low entropy, repeated blocks) and counts are reported honestly (`N candidates, showing M`).
   - `--pak <file>` verifies every candidate against an Unreal pak (verified keys first); `--bundle <file>` saves the evidence bundle; `--json` prints scan + bundle.

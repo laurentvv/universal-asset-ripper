@@ -194,6 +194,32 @@ Rather than relying strictly on external installations, the entire **[morluto/re
   * **Engine-less PE/ELF Inspection:** Export tables, delay-loads, Authenticode certificates, TLS callbacks/load configuration, ELF notes.
   * **Ghidra Enhancements:** DOL GameCube/Wii language selection and override conflict detection (`REA_GHIDRA_LANGUAGE_ID`).
 
+---
+
+## 10. Keeping REA Up-to-Date (Sync Automation)
+
+To track upstream updates from [morluto/rea](https://github.com/morluto/rea), Universal Asset Ripper provides an automated synchronization utility:
+
+```bash
+# Check if a new release is available upstream without changing anything:
+npm run sync:rea:check
+
+# Perform the sync to the latest release:
+npm run sync:rea
+
+# Sync to a specific tag or branch, or force re-sync:
+npm run sync:rea -- --ref rea-agents-6.8.0
+npm run sync:rea -- --force
+```
+
+### What `sync-rea` Automates:
+1. **Upstream Tag Discovery:** Inspects remote git tags on `morluto/rea` and compares them with the local vendored version in `rea/package.json`.
+2. **Shallow Staging Clone:** Fetches only the required target tag/ref into an ephemeral staging area.
+3. **Vendored Tree Refresh:** Syncs the fresh engine source, bridges, docs, and configurations into `./rea/` (excluding `.git` and `node_modules`).
+4. **Agent Skills Synchronization:** Automatically updates the official skills (`reverse-engineer-anything`, `rea-analysis-optimization`, etc.) in [`.zcode/skills/`](../.zcode/skills/) and `.agents/skills/`.
+5. **Post-Sync Verification:** Prompts to run `npm test` and `npm run lint` on the parent repository.
+
+
 
 
 
