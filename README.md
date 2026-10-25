@@ -194,16 +194,16 @@ ripper decompile "target.exe" -f "MainEntryPoint" --backend ghidra -o ./decompil
 # Run setup guide for external engines
 npm run setup:decompilers
 ```
-### 6. Automated Directory Audit & Reverse Engineering Pipeline
+### 6. Automated Directory Audit & Mandatory Decompilation Pipeline
 Point `ripper audit` (or alias `ripper rea-dir`) to any application or game directory to automatically launch the full end-to-end recovery pipeline:
 ```bash
-# Run full automated audit on an installed application folder
-ripper audit "C:/Program Files/Notepad++"
-
-# Save comprehensive audit dossier (audit-report.json & audit-report.md)
+# Run full automated audit with mandatory C decompilation (active by default)
 ripper audit "C:/Program Files/Notepad++" -o ./audit-results
+
+# Skip decompilation if only performing visual/surface audit
+ripper audit "C:/Program Files/Notepad++" -o ./audit-results --no-decompile
 ```
-The automated auditor detects the engine, scans all primary and sibling executables/DLLs, extracts Win32 dialogs and visual resources, recovers CLI switches and exported plugin APIs, categorizes all configuration models (syntax, themes, autocomplete, function outlines), and writes actionable clean-room recovery recommendations.
+The automated auditor detects the engine, scans all primary and sibling executables/DLLs, **decompiles entrypoints and exported plugin functions to C** via the native headless NSA Ghidra/Sleigh engine (< 900ms per function, zero Java), extracts Win32 dialogs and visual resources, recovers CLI switches and exported plugin APIs, categorizes all configuration models (syntax, themes, autocomplete, function outlines), and writes actionable clean-room recovery recommendations.
 
 See the detailed [Decompiler Guide](docs/decompiler-guide.md) and [Complete Functional REA Workflow](docs/workflow-rea-complete.md).
 

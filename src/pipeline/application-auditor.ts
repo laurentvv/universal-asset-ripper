@@ -187,10 +187,11 @@ export class ApplicationAuditor {
       };
     });
 
-    // 6. Targeted Decompilation (Phase 4b) if requested
+    // 6. Targeted Decompilation (Phase 4b) — Mandatory & automated by default
     const recommendations: string[] = [];
     let totalDecompiledFunctions = 0;
-    if (options.decompile) {
+    const shouldDecompile = options.decompile !== false;
+    if (shouldDecompile) {
       if (decompilerReady) {
         // Decompile primary executable entrypoint/WinMain
         if (primary) {
@@ -222,7 +223,7 @@ export class ApplicationAuditor {
         }
       } else {
         recommendations.push(
-          "Decompilation requested (--decompile) but no C decompiler engine was detected. Run 'npm run setup:decompilers' to install and configure Ghidra or Cutter."
+          "Decompilation is enabled by default in Phase 4 but no C decompiler engine was detected. Run 'npm run setup:decompilers' to install and configure Ghidra or Cutter."
         );
       }
     }

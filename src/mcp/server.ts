@@ -225,7 +225,7 @@ export async function callTool(name: string, args: ToolArgs) {
       const outputDir = optionalString(args, "outputDir");
       if (outputDir) await assertAllowed("outputDir", outputDir);
       const maxDepth = typeof args?.maxDepth === "number" ? args.maxDepth : undefined;
-      const decompile = typeof args?.decompile === "boolean" ? args.decompile : undefined;
+      const decompile = typeof args?.decompile === "boolean" ? args.decompile : true;
       const result = await ApplicationAuditor.auditDirectory(targetDir, {
         outputDir,
         maxDepth,

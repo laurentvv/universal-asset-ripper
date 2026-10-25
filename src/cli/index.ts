@@ -533,7 +533,7 @@ program
   .description("Run automated end-to-end reverse engineering, asset discovery, PE resource extraction, and multi-binary audit on a directory")
   .option("-o, --output <dir>", "Directory where audit-report.json and audit-report.md will be saved")
   .option("--max-depth <number>", "Maximum directory recursion depth", (v) => parseInt(v, 10), 4)
-  .option("--decompile", "Run targeted C decompilation on key functions via Ghidra/Cutter if available", false)
+  .option("--no-decompile", "Skip automated C decompilation phase (enabled by default)")
   .option("--json", "Print output as JSON")
   .action(async (targetDir: string, opts: { output?: string; maxDepth: number; decompile?: boolean; json?: boolean }) => {
     const spinner = startSpinner(`Running automated application audit on: ${chalk.cyan(targetDir)}...`, opts.json);
@@ -542,7 +542,7 @@ program
       const report = await ApplicationAuditor.auditDirectory(resolved, {
         outputDir: opts.output,
         maxDepth: opts.maxDepth,
-        decompile: opts.decompile
+        decompile: opts.decompile !== false
       });
 
       if (opts.json) {
