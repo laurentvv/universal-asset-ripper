@@ -80,6 +80,21 @@ Inspect sibling configuration files, schemas, and models shipped with the softwa
 
 ---
 
+### Phase 3b: Sibling Binary & Plugin Ecosystem Reverse Engineering
+Never limit reverse engineering to the primary `.exe` alone: companion DLLs, shell extensions, and helper tools reveal crucial architecture contracts:
+1. **Plugin ABI & Function Tables (`plugins/`)**:
+   - Extract export tables via `ripper symbols`: reveals Notepad++ plugin standard ABI (`isUnicode`, `setInfo`, `beNotified`, `getFuncsArray`, `messageProc`).
+   - `mimeTools.dll`: Base64, URL encoding, Quoted-Printable, and SAML decompression.
+   - `NppConverter.dll`: ASCII <-> HEX, Decimal <-> Hexadecimal conversions.
+   - `NppExport.dll`: Syntax-highlighted HTML & RTF export engine.
+2. **Shell Extensions & Windows Integration (`contextMenu/NppShell.dll`)**:
+   - Reverse-engineer Explorer command handlers (`ClassicEditWithNppExplorerCommandHandler` and Windows 11 `ModernEditWithNppExplorerCommandHandler`).
+   - Recovers Registry keys (`Software\Classes\*\shell\ANotepad++64`) and shared memory IPC (`Local\BaseNppExplorerCommandHandlerSharedMemory`).
+3. **Auxiliary Services & Updaters (`updater/GUP.exe`)**:
+   - Extract CLI usage and XML update protocols (`-v<VERSION>`, `-infoUrl=<URL>`, `-chkCertSig=<yes|no>`, `-forceDomain=<DOMAIN>`).
+
+---
+
 ### Phase 4: Deep Disassembly & Decompilation
 When algorithmic behavior or internal logic needs verification:
 1. **Inspect Available Engines**:

@@ -12,5 +12,10 @@ Key recovered assets & specifications applied to `notepadpp-rs`:
 - **Icons & Bitmaps:** 341 icon resources extracted and mapped.
 - **Function List Outline (`functionList/`):** Symbol patterns recovered for functions/classes outline sidebar.
 - **Tab History & Session:** Recovered `Ctrl+Shift+T` recently closed tab stack.
+- **HTML & Document Export (`NppExport.dll`):** Stand-alone HTML export with line numbers and syntax styling.
+- **DEC <-> HEX Numeric Converters (`NppConverter.dll`):** Hexadecimal / decimal integer conversions.
+- **Quoted-Printable Encoding (`mimeTools.dll`):** RFC 2045 quoted-printable encoder.
+- **Shell Integration Architecture (`NppShell.dll`):** IExplorerCommand modern handler and registry shell keys.
+- **Updater CLI Interface (`GUP.exe`):** Automated updater parameters (`-v`, `-infoUrl`, `-chkCertSig`).
 
 
