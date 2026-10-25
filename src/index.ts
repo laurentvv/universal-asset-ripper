@@ -9,4 +9,5 @@ export * from "./adapters/pe-adapter.js";
 export * from "./rea/binary-scanner.js";
 export * from "./rea/rea-bridge.js";
 export * from "./decompiler/index.js";
+export * from "./pipeline/application-auditor.js";
 export * from "./mcp/server.js";

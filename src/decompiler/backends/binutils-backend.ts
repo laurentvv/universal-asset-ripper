@@ -186,10 +186,30 @@ export class BinutilsBackend {
         const { stdout } = await runTool(objdump, ["-p", binaryPath]);
         const lines = stdout.split(/\r?\n/);
         let currentDll = "";
+        let inExportTable = false;
         const importRegex = /^\s+([0-9a-fA-F]{8})\s+(?:<none>|\d+)\s+(?:[0-9a-fA-F]+|<none>)\s+([a-zA-Z0-9_@?]+)/;
+        const exportRegex = /^\s*\[\s*\d+\]\s+\+base\[\s*\d+\]\s+[0-9a-fA-F]+\s+([a-zA-Z0-9_@?]+)/;
 
         for (const line of lines) {
-          if (line.includes("DLL Name:")) {
+          if (line.includes("[Ordinal/Name Pointer] Table")) {
+            inExportTable = true;
+          } else if (line.includes("The Function Table") || line.includes("The Import Tables")) {
+            inExportTable = false;
+          }
+
+          if (inExportTable) {
+            const expMatch = line.match(exportRegex);
+            if (expMatch) {
+              const func = expMatch[1];
+              if (!filter || func.toLowerCase().includes(filter.toLowerCase())) {
+                symbols.push({
+                  name: func,
+                  address: "0x0",
+                  kind: "export"
+                });
+              }
+            }
+          } else if (line.includes("DLL Name:")) {
             const match = line.match(/DLL Name:\s+([^\r\n]+)/);
             if (match) currentDll = match[1].trim();
           } else {

@@ -13,6 +13,7 @@ import { ASSET_CATEGORIES, type AssetCategory } from "../types/index.js";
 import { validateCategories } from "../utils/file-utils.js";
 import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
 import type { DecompilerBackendType } from "../decompiler/types.js";
+import { ApplicationAuditor } from "../pipeline/application-auditor.js";
 
 const DEFAULT_INSPECT_LIMIT = 200;
 
@@ -214,6 +215,19 @@ export async function callTool(name: string, args: ToolArgs) {
       const result = await DecompilerRegistry.decompile(binaryPath, {
         functionOrAddress,
         backend
+      });
+      return jsonResult(result);
+    }
+
+    if (name === "ripper_audit_directory") {
+      const targetDir = requireString(args, "targetDir");
+      await assertAllowed("targetDir", targetDir);
+      const outputDir = optionalString(args, "outputDir");
+      if (outputDir) await assertAllowed("outputDir", outputDir);
+      const maxDepth = typeof args?.maxDepth === "number" ? args.maxDepth : undefined;
+      const result = await ApplicationAuditor.auditDirectory(targetDir, {
+        outputDir,
+        maxDepth
       });
       return jsonResult(result);
     }
@@ -427,6 +441,30 @@ export function createMcpServer(): Server {
               }
             },
             required: ["binaryPath"]
+          }
+        },
+        {
+          name: "ripper_audit_directory",
+          description: "Run automated end-to-end reverse engineering, asset discovery, PE resource extraction, and multi-binary audit across an application directory.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              targetDir: {
+                type: "string",
+                description: "Path to the application or game installation directory"
+              },
+              outputDir: {
+                type: "string",
+                description: "Optional directory where audit-report.json and audit-report.md will be saved"
+              },
+              maxDepth: {
+                type: "integer",
+                minimum: 1,
+                maximum: 10,
+                description: "Maximum directory recursion depth (default 4)"
+              }
+            },
+            required: ["targetDir"]
           }
         }
       ]

@@ -12,6 +12,7 @@ import { runDoctor } from "../utils/doctor.js";
 import { validateCategories } from "../utils/file-utils.js";
 import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
 import type { DecompilerBackendType } from "../decompiler/types.js";
+import { ApplicationAuditor } from "../pipeline/application-auditor.js";
 
 const program = new Command();
 
@@ -522,6 +523,98 @@ program
       console.log(chalk.bold("────────────────────────────────────────"));
     } catch (err: unknown) {
       failCommand(spinner, opts.json, `Symbol dump failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+// Command: audit (alias: rea-dir)
+program
+  .command("audit <targetDir>")
+  .alias("rea-dir")
+  .description("Run automated end-to-end reverse engineering, asset discovery, PE resource extraction, and multi-binary audit on a directory")
+  .option("-o, --output <dir>", "Directory where audit-report.json and audit-report.md will be saved")
+  .option("--max-depth <number>", "Maximum directory recursion depth", (v) => parseInt(v, 10), 4)
+  .option("--json", "Print output as JSON")
+  .action(async (targetDir: string, opts: { output?: string; maxDepth: number; json?: boolean }) => {
+    const spinner = startSpinner(`Running automated application audit on: ${chalk.cyan(targetDir)}...`, opts.json);
+    try {
+      const resolved = path.resolve(targetDir);
+      const report = await ApplicationAuditor.auditDirectory(resolved, {
+        outputDir: opts.output,
+        maxDepth: opts.maxDepth
+      });
+
+      if (opts.json) {
+        printJson(report);
+        return;
+      }
+
+      spinner.succeed(`Audit complete for ${chalk.green(report.appName)}.`);
+
+      console.log();
+      console.log(chalk.bold("──────────────────────────────────────────────────────────"));
+      console.log(chalk.bold.magenta(`  Application Reverse Engineering Audit: ${chalk.white(report.appName)}`));
+      console.log(chalk.bold("──────────────────────────────────────────────────────────"));
+      console.log(`  Target Directory:    ${chalk.white(report.targetDirectory)}`);
+      console.log(`  Engine Detected:     ${chalk.yellow(report.engine.toUpperCase())} (${Math.round(report.confidence * 100)}%)`);
+      console.log(`  Total Files:         ${chalk.cyan(report.totalFiles.toLocaleString())} (${(report.totalSizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+      console.log();
+
+      console.log(chalk.bold("  Summary of Recovered Artifacts:"));
+      console.log(`   ✔ ${chalk.bold("Dialog Templates:")}     ${chalk.green(report.summary.totalDialogs)} embedded Win32 dialogs`);
+      console.log(`   ✔ ${chalk.bold("Icons & Bitmaps:")}      ${chalk.green(report.summary.totalIcons)} visual resources`);
+      console.log(`   ✔ ${chalk.bold("Discovered CLI Flags:")} ${chalk.green(report.summary.totalCliFlags)} flags`);
+      console.log(`   ✔ ${chalk.bold("Sibling DLLs & Plugins:")} ${chalk.green(report.siblingDlls.length)} libraries (${report.summary.totalPluginExports} exports)`);
+      console.log(`   ✔ ${chalk.bold("Config Models:")}        ${chalk.green(report.configurationModels.length)} XML/JSON/YAML models`);
+
+      if (report.primaryExecutable) {
+        console.log();
+        console.log(chalk.bold("  Primary Executable:"));
+        console.log(`   File:        ${chalk.white(report.primaryExecutable.name)}`);
+        console.log(`   Imports:     ${chalk.cyan(report.primaryExecutable.importedFunctionCount)} functions across ${report.primaryExecutable.importedDlls.length} DLLs`);
+        if (report.primaryExecutable.cliFlags.length > 0) {
+          console.log(`   CLI Flags:   ${chalk.dim(report.primaryExecutable.cliFlags.slice(0, 8).join(", "))}...`);
+        }
+      }
+
+      if (report.siblingDlls.length > 0) {
+        console.log();
+        console.log(chalk.bold("  Sibling DLLs & Plugins Discovered:"));
+        for (const dll of report.siblingDlls) {
+          console.log(`   • ${chalk.white(dll.relativePath)} (${chalk.yellow(dll.purposeInferred)})`);
+          if (dll.exportedFunctions.length > 0) {
+            console.log(`     Exports: ${chalk.dim(dll.exportedFunctions.slice(0, 6).join(", "))}`);
+          }
+        }
+      }
+
+      if (report.configurationModels.length > 0) {
+        console.log();
+        console.log(chalk.bold("  Key Configuration Models:"));
+        for (const cfg of report.configurationModels.slice(0, 8)) {
+          console.log(`   • ${chalk.white(cfg.relativePath)} [${chalk.cyan(cfg.category)}]: ${chalk.dim(cfg.description)}`);
+        }
+        if (report.configurationModels.length > 8) {
+          console.log(chalk.dim(`     ... and ${report.configurationModels.length - 8} more configuration files`));
+        }
+      }
+
+      if (report.recommendations.length > 0) {
+        console.log();
+        console.log(chalk.bold("  Recommendations for Clean-Room Recovery:"));
+        for (const rec of report.recommendations) {
+          console.log(`   ⚡ ${chalk.yellow(rec)}`);
+        }
+      }
+
+      if (opts.output) {
+        console.log();
+        console.log(`  Audit report saved to: ${chalk.cyan(opts.output)} (audit-report.json & audit-report.md)`);
+      }
+
+      console.log(chalk.bold("──────────────────────────────────────────────────────────"));
+      console.log();
+    } catch (err: unknown) {
+      failCommand(spinner, opts.json, `Directory audit failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 
