@@ -55,7 +55,12 @@ describe("AssetRipper headless web mode", () => {
   });
 
   afterEach(async () => {
-    process.env = { ...saved };
+    // Restore keys in place: replacing the whole process.env object breaks env propagation to
+    // child processes on Node >= 26 (children keep seeing the stale native environment block).
+    for (const key of Object.keys(process.env)) {
+      if (!(key in saved)) delete process.env[key];
+    }
+    Object.assign(process.env, saved);
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
