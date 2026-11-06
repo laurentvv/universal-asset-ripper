@@ -3,7 +3,7 @@
 > Instructions for any AI coding agent working in this repository.
 > Structure: **common block** (delimited, resyncable) + **project-specific part** (free).
 
-<!-- BEGIN:agents-common v3.2 — block shared across repositories (agents-kit). Do not edit by hand: resync with scripts/sync_agents.py -->
+<!-- BEGIN:agents-common v3.3 — block shared across repositories (agents-kit). Do not edit by hand: resync with scripts/sync_agents.py -->
 <!-- The script only replaces what lies between the BEGIN/END markers; all repository-specific content is preserved -->
 
 > **Priority on conflict**: explicit user instruction > this repo's §7 > this common block. The §5 prohibitions are lifted only on a formal explicit request. This block is overwritten on every sync: add nothing here (lessons → §7, see §6).
@@ -51,6 +51,7 @@ The dependency (`duckdb>=1.1.0`) is declared inside the script (PEP 723): uv bui
 - Once the PR is submitted: **stop** (no waiting loop); merge only on explicit instruction.
 - **Never a destructive git command on live work**: `reset --hard`, `clean -fd`, `checkout -- .` / `restore .`, `push --force` on a shared branch. To undo a test commit: `git reset --soft HEAD~1`, then targeted cleanup.
 - Push only on the user's explicit request.
+- **No CI on GitHub's infrastructure**: agents never create, edit or enable GitHub Actions workflows (`.github/workflows/`) — builds and validation run locally; modifying an existing workflow requires a formal explicit request.
 - **Pre-commit checklist**: tests/linters green · no secret in the diff · maintained docs up to date · ledger synced.
 
 ## §5 Security & integrity
