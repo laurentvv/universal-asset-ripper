@@ -1,5 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { promisify } from "node:util";
+import * as zlib from "node:zlib";
 import { BaseEngineAdapter } from "./engine-adapter.js";
 import { UnrealPakParser } from "../parsers/unreal/pak-parser.js";
 import {
@@ -8,9 +10,19 @@ import {
   isNativeCompression,
   pakEntryToAssetItem,
   readPakIndex,
-  type PakEntry,
   type PakIndex
 } from "../parsers/unreal/pak-index.js";
+import {
+  IoStoreError,
+  extractIoStoreFiles,
+  iostoreFileToAssetItem,
+  listIoStoreFiles,
+  readIoStoreToc,
+  ucasPathFor,
+  type IoStoreFile,
+  type IoStoreToc
+} from "../parsers/unreal/iostore-parser.js";
+import { convertExtractedUnrealTextures } from "../parsers/unreal/utexture-parser.js";
 import { listFilesRecursively } from "../utils/file-utils.js";
 import { runTool } from "../utils/exec.js";
 import type {
@@ -21,6 +33,9 @@ import type {
   ExtractionResult,
   InspectOptions
 } from "../types/index.js";
+
+const inflateAsync = promisify(zlib.inflate);
+const gunzipAsync = promisify(zlib.gunzip);
 
 export class UnrealAdapter extends BaseEngineAdapter {
   readonly engine: EngineType = "unreal";
@@ -95,8 +110,24 @@ export class UnrealAdapter extends BaseEngineAdapter {
             listError = err instanceof Error ? err : new Error(String(err));
           }
         }
-      } else if (ext === ".utoc" || ext === ".ucas") {
-        engineVersion = "UE Zen Store (UE 4.26+ / 5)";
+      } else if (ext === ".utoc") {
+        try {
+          const toc = readIoStoreToc(await fs.readFile(container));
+          const listing = listIoStoreFiles(toc, Number.MAX_SAFE_INTEGER);
+          if (!engineVersion) {
+            engineVersion = `UE IoStore v${toc.header.version} (UE 4.26+ / 5)`;
+          }
+          assets.push(...listing.files.map((f) => iostoreFileToAssetItem(f, relContainer)));
+          continue;
+        } catch (err: unknown) {
+          listError = err instanceof Error ? err : new Error(String(err));
+          if (!engineVersion) engineVersion = "UE IoStore (UE 4.26+ / 5)";
+        }
+      } else if (ext === ".ucas") {
+        // The sibling .utoc lists the pair's files; a lone .ucas stays a container-level item
+        const siblingToc = container.replace(/\.ucas$/i, ".utoc");
+        if (await fs.stat(siblingToc).then(() => true, () => false)) continue;
+        if (!engineVersion) engineVersion = "UE Zen Store (UE 4.26+ / 5)";
       }
 
       assets.push({
@@ -187,7 +218,11 @@ export class UnrealAdapter extends BaseEngineAdapter {
 
     const result = await extractPakEntries(container, native, options.outputDir, { aesKey: options.aesKey });
     count += result.extracted.length;
-    this.reportEntryErrors(container, result.errors, errors);
+    this.reportEntryErrors(
+      container,
+      result.errors.map((e) => ({ name: e.entry.displayPath, error: e.error })),
+      errors
+    );
 
     if (needsRepak.length > 0) {
       const codecs = [...new Set(needsRepak.map((e) => e.compression))].join(", ");
@@ -216,22 +251,78 @@ export class UnrealAdapter extends BaseEngineAdapter {
   /** Group repetitive per-entry failures (e.g. every entry needing the same missing key) into one line */
   private reportEntryErrors(
     container: string,
-    failures: Array<{ entry: PakEntry; error: Error }>,
+    failures: Array<{ name: string; error: Error }>,
     errors: Array<{ file: string; error: string }>
   ): void {
-    const groups = new Map<string, PakEntry[]>();
+    const groups = new Map<string, string[]>();
     for (const f of failures) {
       const list = groups.get(f.error.message) ?? [];
-      list.push(f.entry);
+      list.push(f.name);
       groups.set(f.error.message, list);
     }
-    for (const [message, entries] of groups) {
-      if (entries.length > 5) {
-        errors.push({ file: container, error: `${entries.length} entries failed: ${message} (first: ${entries[0].displayPath})` });
+    for (const [message, names] of groups) {
+      if (names.length > 5) {
+        errors.push({ file: container, error: `${names.length} entries failed: ${message} (first: ${names[0]})` });
       } else {
-        for (const e of entries) errors.push({ file: `${container}::${e.displayPath}`, error: message });
+        for (const n of names) errors.push({ file: `${container}::${n}`, error: message });
       }
     }
+  }
+
+  /**
+   * Decompression callback for IoStore chunks: Node-supported codecs only. Oodle and custom
+   * games' codecs are rejected with a clear error.
+   */
+  private async decompressIoStoreBlock(data: Buffer, method: string): Promise<Buffer> {
+    if (method === "none") return data;
+    const m = method.toLowerCase();
+    try {
+      if (m === "zlib" || m === "deflate") return await inflateAsync(data);
+      if (m === "gzip") return await gunzipAsync(data);
+    } catch (err) {
+      throw new IoStoreError("corrupt", `Could not decompress a ${method} block (${err instanceof Error ? err.message : String(err)}).`);
+    }
+    throw new IoStoreError(
+      "unsupported",
+      `Compression '${method}' is not supported natively (IoStore chunks need the game's own codec, e.g. Oodle).`
+    );
+  }
+
+  /**
+   * Natively list and extract an IoStore container (.utoc + .ucas). Returns the number of
+   * extracted files; failures are reported through `errors`.
+   */
+  private async extractUtoc(container: string, options: ExtractOptions, dryRun: boolean, errors: Array<{ file: string; error: string }>): Promise<number> {
+    const relContainer = path.relative(options.outputDir, container) || path.basename(container);
+    let toc: IoStoreToc;
+    let listing: { mount: string; files: IoStoreFile[]; total: number };
+    try {
+      toc = readIoStoreToc(await fs.readFile(container));
+      listing = listIoStoreFiles(toc, Number.MAX_SAFE_INTEGER);
+    } catch (err: unknown) {
+      errors.push({ file: container, error: err instanceof Error ? err.message : String(err) });
+      return 0;
+    }
+
+    const { selected } = this.planExtraction(listing.files, options, (f) => iostoreFileToAssetItem(f));
+    if (dryRun) return selected.length;
+
+    const ucas = ucasPathFor(container);
+    const result = await extractIoStoreFiles(ucas, toc, selected, options.outputDir, (data, method) => this.decompressIoStoreBlock(data, method));
+    this.reportEntryErrors(
+      relContainer,
+      result.errors.map((e) => ({ name: e.file.displayPath, error: e.error })),
+      errors
+    );
+    return result.extracted.length;
+  }
+
+  /**
+   * Decode extracted Unreal packages (uasset + uexp pairs) into PNG textures when --convert is
+   * on. See convertExtractedUnrealTextures in utexture-parser for the semantics.
+   */
+  private async convertExtractedTextures(outputDir: string, errors: Array<{ file: string; error: string }>): Promise<number> {
+    return convertExtractedUnrealTextures(outputDir, errors);
   }
 
   async extract(targetPath: string, options: ExtractOptions): Promise<ExtractionResult> {
@@ -256,11 +347,19 @@ export class UnrealAdapter extends BaseEngineAdapter {
     for (const container of allContainers) {
       const ext = path.extname(container).toLowerCase();
 
-      if (ext === ".utoc" || ext === ".ucas") {
+      if (ext === ".utoc") {
+        if (!containerSelected(container)) continue;
+        extractedCount += await this.extractUtoc(container, options, dryRun, errors);
+        continue;
+      }
+      if (ext === ".ucas") {
+        // The sibling .utoc extraction handles the pair; a lone .ucas cannot be listed
+        const siblingToc = container.replace(/\.ucas$/i, ".utoc");
+        if (await fs.stat(siblingToc).then(() => true, () => false)) continue;
         if (!containerSelected(container)) continue;
         errors.push({
           file: container,
-          error: "Unsupported: IoStore containers (.utoc/.ucas) cannot be unpacked yet (repak handles .pak only)."
+          error: "Unsupported: a .ucas without its .utoc table of contents cannot be listed."
         });
         continue;
       }
@@ -290,6 +389,10 @@ export class UnrealAdapter extends BaseEngineAdapter {
           error: err instanceof Error ? err.message : String(err)
         });
       }
+    }
+
+    if (options.convertFormats && !dryRun && extractedCount > 0) {
+      extractedCount += await this.convertExtractedTextures(options.outputDir, errors);
     }
 
     return {

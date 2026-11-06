@@ -1,0 +1,34 @@
+NOTICE
+======
+
+This repository includes clean-room TypeScript ports of modules from the
+following third-party project:
+
+  Project:   Craft Anything (storytold/craft-anything)
+  Source:    https://github.com/storytold/craft-anything
+  Commit:    fc93bd091e7810e08b540a67487e3bf5f2b7da2b
+  License:   MIT OR Apache-2.0
+  Copyright: ArtCraft Team (2026)
+
+Ported modules (crates/formats/src, crates referenced by the license files
+MIT and LICENSE-APACHE in the upstream repository):
+
+  - unreal_iostore.rs -> src/parsers/unreal/iostore-parser.ts
+    (Unreal Engine IoStore .utoc/.ucas container reader; extended beyond the
+    upstream module with chunk extraction and Zip Slip protection)
+
+  - unreal_texture.rs -> src/parsers/unreal/utexture-parser.ts
+    (UE 4.26-4.27 cooked package summary and Texture2D export reader)
+
+  - pixels.rs         -> src/parsers/texture/pixel-layouts.ts
+    (uncompressed and DXT/BC4/BC5 pixel layouts to RGBA)
+
+  - bptc.rs           -> src/parsers/texture/bptc.ts
+    (BC7 and BC6H block decoders, following the Khronos Data Format
+    Specification; the upstream test vectors derived from the specification
+    are ported to tests/unreal-texture.test.ts)
+
+These are independent re-implementations written from the upstream sources
+and the specification; the upstream project's license terms (MIT OR
+Apache-2.0) apply to the ported logic. The full license texts are available
+in the upstream repository (LICENSE-MIT, LICENSE-APACHE).
