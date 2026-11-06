@@ -5,7 +5,7 @@ import { PeResourceParser, type PeInfo, type PeResourceEntry } from "../parsers/
 import { buildBmpFile, decodeStringBlock, decodeVersionInfo } from "../parsers/pe/pe-resource-decoders.js";
 import { parseDialogTemplate } from "../parsers/pe/pe-dialog-template.js";
 import { convertBinaryDfmToText, isBinaryDfm } from "../parsers/delphi/dfm-converter.js";
-import { resolveSafeOutputPath } from "../utils/file-utils.js";
+import { assertSafeOutputPath } from "../utils/file-utils.js";
 import type {
   AssetCategory,
   AssetItem,
@@ -249,13 +249,12 @@ export class PeSoftwareAdapter extends BaseEngineAdapter {
 
         for (const img of images) {
           try {
-            const outPath = resolveSafeOutputPath(options.outputDir, `${job.dir}/${img.name}`);
-            if (!outPath) throw new Error("Unsafe resource path rejected");
+            const outPath = assertSafeOutputPath(options.outputDir, `${job.dir}/${img.name}`);
             await fs.mkdir(path.dirname(outPath), { recursive: true });
             await fs.writeFile(outPath, img.buffer);
             extractedCount++;
           } catch (err: unknown) {
-            errors.push({ file: img.name, error: String(err) });
+            errors.push({ file: img.name, error: err instanceof Error ? err.message : String(err) });
           }
         }
       }
@@ -338,20 +337,17 @@ export class PeSoftwareAdapter extends BaseEngineAdapter {
           }
 
           // Resource type names can be arbitrary strings: never let them leave outputDir
-          const outPath = resolveSafeOutputPath(options.outputDir, `${subDir}/${fileName}`);
-          if (!outPath) {
-            throw new Error("Unsafe resource path rejected");
-          }
+          const outPath = assertSafeOutputPath(options.outputDir, `${subDir}/${fileName}`);
           await fs.mkdir(path.dirname(outPath), { recursive: true });
           await fs.writeFile(outPath, content);
           extractedCount++;
 
           if (extra) {
-            const extraPath = resolveSafeOutputPath(options.outputDir, `${subDir}/${extra.fileName}`);
-            if (extraPath) await fs.writeFile(extraPath, extra.content);
+            const extraPath = assertSafeOutputPath(options.outputDir, `${subDir}/${extra.fileName}`);
+            await fs.writeFile(extraPath, extra.content);
           }
         } catch (err: unknown) {
-          errors.push({ file: `${res.typeName}_${res.nameOrId}`, error: String(err) });
+          errors.push({ file: `${res.typeName}_${res.nameOrId}`, error: err instanceof Error ? err.message : String(err) });
         }
       }
 

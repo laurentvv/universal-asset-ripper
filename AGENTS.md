@@ -101,7 +101,7 @@ The dependency (`duckdb>=1.1.0`) is declared inside the script (PEP 723): uv bui
 *(schema contracts, product invariants, domain rules…)*
 
 ### Pitfalls & lessons (dated format)
-- **[YYYY-MM-DD] context** — rule kept. *(Lessons live HERE, never in the common block: it is overwritten on every sync.)*
+- **[2026-10-25] archive extraction security (Zip Slip / Path Traversal)** — Never trust entry paths inside archives (.pak, .pck, .asar, PE resources, tar/zip). Enforce target_path.resolve().is_relative_to(dest_dir.resolve()) (or isRelativeTo / assertSafeOutputPath in TypeScript) before writing any member to disk, throwing SecurityError("Tentative de Path Traversal détectée dans l'archive").
 
 ### CI / GitHub Actions
 

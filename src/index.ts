@@ -10,4 +10,5 @@ export * from "./rea/binary-scanner.js";
 export * from "./rea/rea-bridge.js";
 export * from "./decompiler/index.js";
 export * from "./pipeline/application-auditor.js";
+export * from "./utils/file-utils.js";
 export * from "./mcp/server.js";

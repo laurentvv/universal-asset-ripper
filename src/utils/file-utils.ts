@@ -208,6 +208,34 @@ export async function parsePeHeaderArch(
 }
 
 /**
+ * Error raised when an archive member attempts a path traversal (Zip Slip).
+ */
+export class SecurityError extends Error {
+  constructor(message = "Tentative de Path Traversal détectée dans l'archive (Unsafe path traversal detected)") {
+    super(message);
+    this.name = "SecurityError";
+    Object.setPrototypeOf(this, SecurityError.prototype);
+  }
+}
+
+/**
+ * Check whether targetPath is strictly inside destDir.
+ * Equivalent to Python's target_path.resolve().is_relative_to(dest_dir.resolve()).
+ */
+export function isRelativeTo(targetPath: string, destDir: string): boolean {
+  const dest = path.resolve(destDir);
+  const target = path.resolve(targetPath);
+  const relative = path.relative(dest, target);
+  return (
+    !relative.startsWith("..") &&
+    !path.isAbsolute(relative) &&
+    relative.length > 0 &&
+    target !== dest &&
+    target.startsWith(dest + path.sep)
+  );
+}
+
+/**
  * Resolve an archive entry path inside outputDir. Drops URI prefixes (res://), drive
  * letters, leading slashes and ':' characters, then rejects (returns null) anything
  * that would escape outputDir once resolved.
@@ -219,8 +247,20 @@ export function resolveSafeOutputPath(outputDir: string, entryPath: string): str
 
   const root = path.resolve(outputDir);
   const resolved = path.resolve(root, rel);
-  if (resolved === root || !resolved.startsWith(root + path.sep)) return null;
+  if (!isRelativeTo(resolved, root)) return null;
   return resolved;
+}
+
+/**
+ * Resolves and verifies that the destination path for an archive entry lies strictly
+ * inside destDir. Throws a SecurityError if Zip Slip / Path Traversal is detected.
+ */
+export function assertSafeOutputPath(destDir: string, entryPath: string): string {
+  const safePath = resolveSafeOutputPath(destDir, entryPath);
+  if (!safePath) {
+    throw new SecurityError("Tentative de Path Traversal détectée dans l'archive (Unsafe path traversal detected)");
+  }
+  return safePath;
 }
 
 /**

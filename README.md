@@ -40,7 +40,8 @@ Whether analyzing **Godot** archives, **Unreal Engine** IoStore/PAK containers, 
   - **Windows PE (.rsrc) :** Complete multi-resolution `.ico` icon reconstruction, Delphi `.dfm` form extraction, **Win32 dialog template decoding (`RT_DIALOG` → JSON with title + every control label — DLGTEMPLATE and DLGTEMPLATEEX incl. the `01 00 ff ff` compiled header order)**, XML manifests, bitmaps, and raw `RCDATA`.
 * 📊 **Asset Manifest & Inspection (`ripper inspect`) :**
   - Full cataloging across unified categories: textures, 3D meshes, audio, scenes, scripts, shaders, fonts, videos, and manifests.
-* ⚡ **Targeted Extraction (`ripper extract`) :**
+* ⚡ **Targeted & Secure Extraction (`ripper extract`) :**
+  - **Zip Slip / Path Traversal Protection :** Strict path resolution validation across all archive extractors (Unreal `.pak`, Godot `.pck`, Electron `.asar`, Chromium `.pak`, and PE resources). Destination paths are verified to reside strictly inside the target output directory (`isRelativeTo` / `assertSafeOutputPath`), rejecting any traversal attempt with `SecurityError("Tentative de Path Traversal détectée dans l'archive")`.
   - Category filtering (`--categories texture,audio,mesh`) and regex/glob filename filtering (`--filter`).
   - **AES-256** keys (`--aes-key <key>`) for Unreal `.pak` and Godot PCK; `--convert` for Godot textures; Unity export through AssetRipper headless web mode (`ASSETRIPPER_PATH`).
 * 🤖 **AI-Assisted Binary Analysis (`ripper rea-inspect`) :**

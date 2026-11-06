@@ -1,6 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { categorizeExtension, copyRangeToFile, resolveSafeOutputPath } from "../../utils/file-utils.js";
+import {
+  assertSafeOutputPath,
+  categorizeExtension,
+  copyRangeToFile
+} from "../../utils/file-utils.js";
 import {
   GODOT_ENCRYPTED_HEADER_BYTES,
   GodotCryptoError,
@@ -383,10 +387,7 @@ export class GodotPckParser {
 
       for (const entry of targetList) {
         try {
-          const outFilePath = resolveSafeOutputPath(outputDir, entry.path);
-          if (!outFilePath) {
-            throw new Error("Unsafe entry path rejected (escapes the output directory)");
-          }
+          const outFilePath = assertSafeOutputPath(outputDir, entry.path);
           await fs.mkdir(path.dirname(outFilePath), { recursive: true });
 
           const isTexture = /\.(ctex|stex)$/i.test(entry.path);

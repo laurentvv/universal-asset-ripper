@@ -5,6 +5,12 @@ import json
 from pathlib import Path, PurePosixPath
 import tarfile
 
+
+class SecurityError(Exception):
+    """Exception levée en cas de tentative de Path Traversal (Zip Slip)."""
+    pass
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('tarball', type=Path)
 parser.add_argument('output', type=Path)
@@ -20,19 +26,26 @@ with tarfile.open(args.tarball) as archive:
             continue
         path = PurePosixPath(member.name)
         if path.is_absolute() or '..' in path.parts:
-            raise ValueError('Unsafe archive member')
+            raise SecurityError("Tentative de Path Traversal détectée dans l'archive")
         if not (member.name.startswith('package/src/') or member.name in selected):
             continue
+        dest_dir = (args.output / 'artifact').resolve()
+        target_path = (dest_dir / str(path)).resolve()
+        if not target_path.resolve().is_relative_to(dest_dir.resolve()):
+            raise SecurityError("Tentative de Path Traversal détectée dans l'archive")
         data = archive.extractfile(member).read()
-        destination = args.output / 'artifact' / str(path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(data)
         if member.name.startswith('package/src/'):
-            layout = args.output / 'reference' / str(path.relative_to('package'))
+            layout_dest = (args.output / 'reference').resolve()
+            layout_target = (layout_dest / str(path.relative_to('package'))).resolve()
         else:
-            layout = args.output / 'artifact/shipped' / str(path.relative_to('package'))
-        layout.parent.mkdir(parents=True, exist_ok=True)
-        layout.write_bytes(data)
+            layout_dest = (args.output / 'artifact/shipped').resolve()
+            layout_target = (layout_dest / str(path.relative_to('package'))).resolve()
+        if not layout_target.resolve().is_relative_to(layout_dest.resolve()):
+            raise SecurityError("Tentative de Path Traversal détectée dans l'archive")
+        layout_target.parent.mkdir(parents=True, exist_ok=True)
+        layout_target.write_bytes(data)
 rows = []
 for name in sorted(bundles):
     document = json.loads((args.output / 'artifact/package/dist' / (name + '.map')).read_text())
