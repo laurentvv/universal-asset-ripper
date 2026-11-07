@@ -52,15 +52,16 @@ describe("external tools are spawned without a shell", () => {
     await expect(fs.access(path.join(process.cwd(), "marker"))).rejects.toThrow();
   });
 
-  it("reports .utoc/.ucas as explicitly unsupported", async () => {
+  it("reports an unreadable .utoc with a clear error and skips its paired .ucas", async () => {
     await fs.writeFile(path.join(tmpDir, "global.utoc"), "toc");
     await fs.writeFile(path.join(tmpDir, "global.ucas"), "cas");
 
     const result = await new UnrealAdapter().extract(tmpDir, { outputDir: path.join(tmpDir, "out") });
 
     expect(result.success).toBe(false);
-    expect(result.errors).toHaveLength(2);
-    expect(result.errors.every((e) => /unsupported/i.test(e.error))).toBe(true);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]!.file).toMatch(/global\.utoc$/);
+    expect(result.errors[0]!.error).toMatch(/IoStore table of contents/i);
     expect(spawned.some((c) => c.args.includes("unpack"))).toBe(false);
   });
 

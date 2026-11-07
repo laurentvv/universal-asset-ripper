@@ -143,4 +143,107 @@ Universal Asset Ripper feeds directly into **[rehan-remade/universal-modder](htt
 
 * **MCP Synergy:** AI agents configured with both Universal Asset Ripper's MCP tools and `universal-modder` skills can run complete end-to-end game modding loops automatically: from package sniffing and AES decryption to asset regeneration and live in-game testing.
 
+---
+
+## 7. The Zero-MCP Philosophy: Lean Reverse Engineering (`leanrea`)
+
+While REA historically relies on a heavy MCP server exposing over 200 individual tools (consuming upwards of 400k tokens just to load tool definitions), **Universal Asset Ripper** embraces the **lean execution philosophy** popularized by **[aicodeking/leanrea](https://github.com/aicodeking/leanrea)**:
+
+1. **Native Parsers vs. MCP Bloat:** Universal Asset Ripper provides zero-dependency pure TypeScript parsers for Godot PCK, Unreal PAK (v1-v11 with AES-256), Electron ASAR/resources.pak, and Windows PE resources. These run in milliseconds via direct CLI invocations.
+2. **Minimal MCP Surface:** When used in MCP mode, Universal Asset Ripper exposes only **4 focused high-level tools** (`ripper_detect`, `ripper_inspect`, `ripper_extract`, `ripper_scan_binary`), keeping context overhead near zero.
+3. **Agent Skill Integration:** Agents in this repository can use the [`.zcode/skills/leanrea/SKILL.md`](../.zcode/skills/leanrea/SKILL.md) skill to drive native CLI tools (`ripper`, `file`, `strings`, `nm`, `rg -uu`, `otool`, `objdump`, `go version -m`) via plain shell commands, achieving 38% faster runs and 35% lower cost compared to multi-tool MCP frameworks.
+
+---
+
+## 8. Structured Agent Prompts (REAP Methodology)
+
+To prevent AI hallucination and ensure evidence-backed reverse engineering findings, follow the **REAP (Reverse Engineering Agent Prompts)** methodology derived from **[JoasASantos/REA-Prompts](https://github.com/JoasASantos/REA-Prompts)**:
+
+* **One feature per prompt**: Keep analysis focused on a single subsystem, function, or encryption scheme.
+* **The 3-bucket classification**:
+  - `[Confirmed Facts]`: Proven by cited offsets, strings, or disassembly opcodes.
+  - `[Inferences]`: Deductions logically inferred from confirmed facts.
+  - `[Unknowns]`: Questions that static inspection has not yet resolved.
+* **Deliverable-oriented**: Conclude investigations with an executable test harness, a behavioral specification (`SPEC.md`), or an [`INVESTIGATION.md`](rea-prompts.md#long-running-investigation-investigationmd-template) progress log.
+
+👉 **See the complete prompt catalog in [REAP: Reverse Engineering Agent Prompts & Investigation Methodology](rea-prompts.md).**
+
+---
+
+## 9. Complete Vendored REA Engine (`v6.8.0`) & Official Skills
+
+Rather than relying strictly on external installations, the entire **[morluto/rea](https://github.com/morluto/rea)** engine (version **6.8.0**, released 2026-10-25) is now managed directly inside this repository under [`rea/`](../rea):
+
+* **Direct Execution:** `ReaBridge` detects `./rea/scripts/rea.mjs` and invokes the local engine seamlessly, with transparent fallback to global `rea`. You can also run it via `npm run rea -- <command>`.
+* **Complete Multi-Platform Bridges:** Includes Ghidra (`bridge/ghidra/`), Android Jadx (`bridge/android/`), Hopper (`bridge/hopper/`), Cutter (`bridge/cutter/`), and Swift LLDB/UI instrumentation (`bridge/native/`).
+* **Official Agent Skills Attached:**
+  * [`.zcode/skills/reverse-engineer-anything/`](../.zcode/skills/reverse-engineer-anything/SKILL.md) — Master reverse engineering skill (35 KB) backed by 7 comprehensive domain guides:
+    - `native-and-artifacts.md` (38 KB deep SRE reference)
+    - `android-applications.md` (DEX, APK signatures, Jadx, ADB)
+    - `connection-and-recovery.md` (deadlines, budgets, failure triage)
+    - `environments.md` (AgentEnv manifest serving & replay)
+    - `evidence-workflows.md` (canonical Evidence contracts)
+    - `javascript-applications.md` (route maps, bundle unbundling, AST)
+    - `runtime-observation.md` (Frida, GDB, LLDB, process tracing)
+  * [`.zcode/skills/rea-analysis-optimization/`](../.zcode/skills/rea-analysis-optimization/SKILL.md) — Investigation profiling and memory optimization.
+  * [`.zcode/skills/rea-tool-design/`](../.zcode/skills/rea-tool-design/SKILL.md) — Deterministic tool design guidelines.
+* **New in REA 6.8.0:**
+  * **Agent Environments:** Project network captures and Evidence into manifests, build environments from browser scenarios, and serve evidence-gated writes.
+  * **Packaged Application Triage:** Inspect & extract Godot PCK, PyInstaller archives, and Node.js Single Executable Application (SEA) blobs.
+  * **Unity / IL2CPP Metadata (v24/v27):** Member names and literals linking, native methods and generic instances linking, Ghidra seeds export.
+  * **Engine-less PE/ELF Inspection:** Export tables, delay-loads, Authenticode certificates, TLS callbacks/load configuration, ELF notes.
+  * **Ghidra Enhancements:** DOL GameCube/Wii language selection and override conflict detection (`REA_GHIDRA_LANGUAGE_ID`).
+
+---
+
+## 10. Keeping REA Up-to-Date (Sync Automation)
+
+To track upstream updates from [morluto/rea](https://github.com/morluto/rea), Universal Asset Ripper provides an automated synchronization utility:
+
+```bash
+# Check if a new release is available upstream without changing anything:
+npm run sync:rea:check
+
+# Perform the sync to the latest release:
+npm run sync:rea
+
+# Sync to a specific tag or branch, or force re-sync:
+npm run sync:rea -- --ref rea-agents-6.8.0
+npm run sync:rea -- --force
+```
+
+### What `sync-rea` Automates:
+1. **Upstream Tag Discovery:** Inspects remote git tags on `morluto/rea` and compares them with the local vendored version in `rea/package.json`.
+2. **Shallow Staging Clone:** Fetches only the required target tag/ref into an ephemeral staging area.
+3. **Vendored Tree Refresh:** Syncs the fresh engine source, bridges, docs, and configurations into `./rea/` (excluding `.git` and `node_modules`).
+4. **Agent Skills Synchronization:** Automatically updates the official skills (`reverse-engineer-anything`, `rea-analysis-optimization`, etc.) in [`.zcode/skills/`](../.zcode/skills/) and `.agents/skills/`.
+5. **Post-Sync Verification:** Prompts to run `npm test` and `npm run lint` on the parent repository.
+
+---
+
+## 11. Multi-Engine Decompilers & Disassembly Backends
+
+Universal Asset Ripper integrates 5 decompiler and disassembly backends orchestrated through `DecompilerRegistry`:
+- **NSA Ghidra** (Sleigh C decompiler)
+- **Cutter / Rizin** (Open-source RE platform & Ghidra decompiler plugin)
+- **Hopper Disassembler** (macOS, Linux, Windows x86/ARM disassembly)
+- **IDA Pro / Hex-Rays** (Batch mode execution)
+- **GNU Binutils** (Zero-install baseline: `objdump`, `nm`, `strings` from MSYS2/PATH)
+
+### CLI Commands:
+```bash
+ripper decompilers      # Inspect engines
+ripper disasm <target>  # Disassemble machine instructions
+ripper symbols <target> # Extract symbol tables & imported APIs
+ripper decompile <tgt>  # Decompile to C with Ghidra/Cutter
+```
+
+For complete setup guides and the full reverse engineering pipeline, see:
+- [Decompiler Backends Guide](decompiler-guide.md)
+- [Complete Functional REA Workflow](workflow-rea-complete.md)
+
+
+
+
+
 

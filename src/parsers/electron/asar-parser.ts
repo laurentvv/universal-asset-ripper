@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { copyRangeToFile, resolveSafeOutputPath } from "../../utils/file-utils.js";
+import { assertSafeOutputPath, copyRangeToFile } from "../../utils/file-utils.js";
 
 /**
  * Reader for Electron .asar archives.
@@ -147,13 +147,11 @@ export class AsarParser {
           continue;
         }
         try {
-          const dest = resolveSafeOutputPath(outputDir, mapPath(entry.path));
-          if (!dest) throw new Error("Unsafe entry path rejected (escapes the output directory)");
+          const dest = assertSafeOutputPath(outputDir, mapPath(entry.path));
           await fs.mkdir(path.dirname(dest), { recursive: true });
 
           if (entry.unpacked) {
-            const src = resolveSafeOutputPath(unpackedRoot, entry.path);
-            if (!src) throw new Error("Unsafe unpacked path rejected");
+            const src = assertSafeOutputPath(unpackedRoot, entry.path);
             try {
               await fs.copyFile(src, dest);
             } catch {

@@ -40,10 +40,16 @@ Whether analyzing **Godot** archives, **Unreal Engine** IoStore/PAK containers, 
   - **Windows PE (.rsrc) :** Complete multi-resolution `.ico` icon reconstruction, Delphi `.dfm` form extraction, **Win32 dialog template decoding (`RT_DIALOG` → JSON with title + every control label — DLGTEMPLATE and DLGTEMPLATEEX incl. the `01 00 ff ff` compiled header order)**, XML manifests, bitmaps, and raw `RCDATA`.
 * 📊 **Asset Manifest & Inspection (`ripper inspect`) :**
   - Full cataloging across unified categories: textures, 3D meshes, audio, scenes, scripts, shaders, fonts, videos, and manifests.
-* ⚡ **Targeted Extraction (`ripper extract`) :**
+* 🎁 **Unreal IoStore containers (`.utoc`/`.ucas`, UE 4.26+ / UE 5) :** Native TOC reader (versions 1-8: chunk table with 40-bit offsets, compression blocks, method names, signatures, directory index) with file listing and chunk extraction (stored/Zlib/Gzip). Oodle and custom codecs are reported as unsupported (no game-side decoder). The same `.utoc` support flows through the generic `ripper inspect` / `ripper extract` CLI commands and MCP tools.
+* 🖼️ **Unreal texture decoding (`--convert`) :** After extraction, cooked UE 4.26-4.27 packages (`.uasset` + `.uexp` + `.ubulk`/`.uptnl`) are parsed for `Texture2D` exports and their mips are decoded to PNG: uncompressed layouts (BGRA/RGBA/R8/A8/RGB565/4444), DXT1/BC1, DXT5/BC3, BC4, BC5 (normal-map Z rebuilt), BC6H (HDR half-float, tone-mapped to sRGB) and BC7 — all 8 BPTC modes, verified against the Khronos specification's worked examples. Unreal 5 packages and unversioned-properties packages are refused with a clear error.
+* ⚡ **Targeted & Secure Extraction (`ripper extract`) :**
+  - **Zip Slip / Path Traversal Protection :** Strict path resolution validation across all archive extractors (Unreal `.pak`, IoStore `.utoc/.ucas`, Godot `.pck`, Electron `.asar`, Chromium `.pak`, and PE resources). Destination paths are verified to reside strictly inside the target output directory (`isRelativeTo` / `assertSafeOutputPath`), rejecting any traversal attempt with `SecurityError("Tentative de Path Traversal détectée dans l'archive")`.
   - Category filtering (`--categories texture,audio,mesh`) and regex/glob filename filtering (`--filter`).
-  - **AES-256** keys (`--aes-key <key>`) for Unreal `.pak` and Godot PCK; `--convert` for Godot textures; Unity export through AssetRipper headless web mode (`ASSETRIPPER_PATH`).
+  - **AES-256** keys (`--aes-key <key>`) for Unreal `.pak` and Godot PCK; `--convert` for Godot textures and Unreal textures; Unity export through AssetRipper headless web mode (`ASSETRIPPER_PATH`).
 * 🤖 **AI-Assisted Binary Analysis (`ripper rea-inspect`) :**
+  - Complete vendored **[morluto/rea](https://github.com/morluto/rea)** engine (v6.8.0) under [`rea/`](rea/) with native bridges (Ghidra, Jadx, Hopper, Cutter, Swift LLDB/UI) and direct execution (`npm run rea`).
+  - Automated upstream sync tool (`npm run sync:rea:check` and `npm run sync:rea`) to track future releases of `morluto/rea` and keep vendored source and agent skills updated automatically.
+  - Official agent skills in [`.zcode/skills/`](.zcode/skills/): `reverse-engineer-anything` (35 KB master skill with 7 domain guides for native SRE, Android, runtime observation, environments), `leanrea`, and `clean-room-port`.
   - The whole file is scanned in overlapping chunks; false positives are filtered (hex runs longer than 64, counting tables, low entropy, repeated blocks) and counts are reported honestly (`N candidates, showing M`).
   - `--pak <file>` verifies every candidate against an Unreal pak (verified keys first); `--bundle <file>` saves the evidence bundle; `--json` prints scan + bundle.
   - Sliding-window Shannon entropy scanning to spot 256-bit encryption keys.
@@ -73,10 +79,9 @@ embedded help; never decompilation):
 Packaged as the **`clean-room-port` skill** (`.zcode/skills/` in this
 repository), documented in
 [docs/workflow-clean-room-reimplementation.md](docs/workflow-clean-room-reimplementation.md).
-Worked example: the **Bitvise SSH Client** port — CLI + egui GUI + Bitvise
-option compatibility — in [`bitvise-rs/`](bitvise-rs/README.md), with its
-[precise inventory](bitvise-rs/docs/inventory.md) (16 executables, 57
-decoded dialogs).
+Worked examples:
+- the **Bitvise SSH Client** port — CLI + egui GUI + Bitvise option compatibility — in [`bitvise-rs/`](bitvise-rs/README.md), with its [precise inventory](bitvise-rs/docs/inventory.md).
+- the **Notepad++** port — `npp-core` + `npp-cli` + `npp-gui` (multi-tab editor, line endings, encodings, search) in modern Rust 1.99.1 (`d:\git\notepadpp-rs`), with its [inventory](docs/notepadpp-inventory.md).
 
 ## 🏗️ Architecture
 
@@ -174,10 +179,43 @@ ripper rea-inspect Game-Win64-Shipping.exe --pak Content/Paks/PakChunk0.pak --bu
 ripper rea-inspect Game-Win64-Shipping.exe --json   # { scan, bundle }
 ```
 
+### 5. Multi-Engine Disassembly & Decompilation
+Drive **GNU Binutils**, **NSA Ghidra**, **Cutter/Rizin**, **Hopper**, and **IDA Pro**:
+```bash
+# List all 5 decompiler engines and readiness status
+ripper decompilers
+
+# Disassemble binary machine code (Intel syntax with opcodes & offsets)
+ripper disasm "C:/Program Files/Notepad++/notepad++.exe" -n 50
+
+# Dump symbols, functions, and imported DLL APIs
+ripper symbols "C:/Program Files/Notepad++/notepad++.exe" --filter "Create"
+
+# Decompile a function to C pseudocode with Ghidra
+ripper decompile "target.exe" -f "MainEntryPoint" --backend ghidra -o ./decompiled.c
+
+# Run setup guide for external engines
+npm run setup:decompilers
+```
+### 6. Automated Directory Audit & Mandatory Decompilation Pipeline
+Point `ripper audit` (or alias `ripper rea-dir`) to any application or game directory to automatically launch the full end-to-end recovery pipeline:
+```bash
+# Run full automated audit with mandatory C decompilation (active by default)
+ripper audit "C:/Program Files/Notepad++" -o ./audit-results
+
+# Skip decompilation if only performing visual/surface audit
+ripper audit "C:/Program Files/Notepad++" -o ./audit-results --no-decompile
+```
+The automated auditor detects the engine, scans all primary and sibling executables/DLLs, **decompiles entrypoints and exported plugin functions to C** via the native headless NSA Ghidra/Sleigh engine (< 900ms per function, zero Java), extracts Win32 dialogs and visual resources, recovers CLI switches and exported plugin APIs, categorizes all configuration models (syntax, themes, autocomplete, function outlines), and writes actionable clean-room recovery recommendations.
+
+See the detailed [Decompiler Guide](docs/decompiler-guide.md) and [Complete Functional REA Workflow](docs/workflow-rea-complete.md).
+
 All commands accept `--json` (pure JSON on stdout).
 
 ### Honest limitations
-* The native pak reader was written from the UE / repak format and tested against synthetic paks built by a test writer, not against commercial game archives. Pak v12+, IoStore (`.utoc/.ucas`), Oodle and Zstd are not handled natively (IoStore is unsupported; Oodle goes through `repak`, which unpacks whole containers, so it cannot honour `--categories/--filter`).
+* The native pak reader was written from the UE / repak format and tested against synthetic paks built by a test writer, not against commercial game archives. Pak v12+, Oodle and Zstd are not handled natively (Oodle goes through `repak`, which unpacks whole containers, so it cannot honour `--categories/--filter`).
+* The IoStore reader follows the same discipline: TOC versions 1-8 with a 144-byte header, tested against synthetic containers (encrypted directory indexes, AES-keyed chunk streams and Oodle blocks stay out of reach without the game's own decoder).
+* Unreal texture parsing covers UE 4.26-4.27 cooked packages (file version -7, versioned properties). Unreal 5 packages and packages written without property names are refused — reading them needs each game's own type layouts.
 * Godot encryption (AES-256-CFB, md5|size|iv|data) follows the engine source but is validated only against our own encryptor. `.ctex` conversion lifts plain PNG/WebP payloads only (no WebP-to-PNG re-encoding, no VRAM-compressed textures).
 * AssetRipper is driven through its headless web API (form field `Path`); the endpoints are tested with a fake server only, and `--categories/--filter` are not supported for Unity.
 * Electron: unpacked `resources/app` folders are not listed; Chromium `.pak` extension guessing is heuristic.
@@ -240,6 +278,9 @@ Universal Asset Ripper forms the upstream reconnaissance and extraction hub with
 * 📘 [Detailed Architecture](docs/architecture.md)
 * 📗 [Engine Deep Dive & Tooling Guide](docs/engines.md)
 * 📙 [REA & AI Agent Integration Guide](docs/rea-guide.md)
+* 📕 [REAP Prompts & Investigation Methodology](docs/rea-prompts.md)
+* ⚡ [Lean RE Skill (`leanrea`)](.zcode/skills/leanrea/SKILL.md)
+* 🛡️ [Clean-Room Porting Skill](.zcode/skills/clean-room-port/SKILL.md)
 
 ---
 

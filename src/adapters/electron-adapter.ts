@@ -9,7 +9,7 @@ import {
   type ChromiumPakResource
 } from "../parsers/electron/chromium-pak.js";
 import { listElectronContainers } from "../parsers/electron/electron-layout.js";
-import { categorizeExtension, resolveSafeOutputPath } from "../utils/file-utils.js";
+import { assertSafeOutputPath, categorizeExtension } from "../utils/file-utils.js";
 import type {
   AssetItem,
   AssetManifest,
@@ -230,8 +230,7 @@ export class ElectronAdapter extends BaseEngineAdapter {
         try {
           for (const p of items) {
             try {
-              const dest = resolveSafeOutputPath(options.outputDir, p.item.path);
-              if (!dest) throw new Error("Unsafe entry path rejected (escapes the output directory)");
+              const dest = assertSafeOutputPath(options.outputDir, p.item.path);
               const data = await ChromiumPakParser.readResource(fh, p.resource);
               await fs.mkdir(path.dirname(dest), { recursive: true });
               await fs.writeFile(dest, data);

@@ -4,7 +4,12 @@ import { createDecipheriv } from "node:crypto";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 import { UnrealPakParser, type UnrealPakInfo } from "./pak-parser.js";
-import { categorizeExtension, copyRangeToFile, resolveSafeOutputPath } from "../../utils/file-utils.js";
+import {
+  assertSafeOutputPath,
+  categorizeExtension,
+  copyRangeToFile,
+  SecurityError
+} from "../../utils/file-utils.js";
 import type { AssetItem } from "../../types/index.js";
 
 /**
@@ -640,9 +645,11 @@ export async function extractPakEntries(
   const extracted: PakEntry[] = [];
   const errors: Array<{ entry: PakEntry; error: PakIndexError | Error }> = [];
   for (const entry of entries) {
-    const dest = resolveSafeOutputPath(outputDir, entry.displayPath);
-    if (!dest) {
-      errors.push({ entry, error: new Error("Unsafe entry path rejected (escapes the output directory)") });
+    let dest: string;
+    try {
+      dest = assertSafeOutputPath(outputDir, entry.displayPath);
+    } catch (err) {
+      errors.push({ entry, error: err instanceof Error ? err : new SecurityError(String(err)) });
       continue;
     }
     try {

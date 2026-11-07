@@ -10,6 +10,9 @@ import { runMcpServer, setAllowedRoots } from "../mcp/server.js";
 import { ASSET_CATEGORIES } from "../types/index.js";
 import { runDoctor } from "../utils/doctor.js";
 import { validateCategories } from "../utils/file-utils.js";
+import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
+import type { DecompilerBackendType } from "../decompiler/types.js";
+import { ApplicationAuditor } from "../pipeline/application-auditor.js";
 
 const program = new Command();
 
@@ -358,6 +361,269 @@ program
       }
     }
     if (!report.ok) process.exitCode = 1;
+});
+
+// Command: decompilers
+program
+  .command("decompilers")
+  .description("List reverse engineering and decompiler engines (Ghidra, Cutter, Hopper, IDA, Binutils)")
+  .option("--json", "Print output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const backends = await DecompilerRegistry.getAvailableBackends();
+    if (opts.json) {
+      printJson(backends);
+      return;
+    }
+    console.log();
+    console.log(chalk.bold("────────────────────────────────────────"));
+    console.log(chalk.bold.magenta("  Reverse Engineering & Decompiler Engines"));
+    console.log(chalk.bold("────────────────────────────────────────"));
+    for (const b of backends) {
+      const mark = b.found ? chalk.green("✔ READY  ") : chalk.yellow("✖ MISSING");
+      console.log(`  ${mark} ${chalk.bold(b.id.padEnd(10))} ${chalk.white(b.name)}`);
+      if (b.executablePath) {
+        console.log(`             ${chalk.dim("Path:")} ${b.executablePath}`);
+      }
+      if (b.version) {
+        console.log(`             ${chalk.dim("Version:")} ${b.version}`);
+      }
+      const caps = Object.entries(b.capabilities)
+        .filter(([_, enabled]) => enabled)
+        .map(([cap]) => cap)
+        .join(", ");
+      console.log(`             ${chalk.dim("Capabilities:")} ${caps}`);
+      if (!b.found) {
+        console.log(`             ${chalk.yellow("Hint:")} ${b.hint}`);
+      }
+      console.log();
+    }
+    console.log(chalk.bold("────────────────────────────────────────"));
+  });
+
+// Command: disasm
+program
+  .command("disasm <binary>")
+  .description("Disassemble binary machine code (Ghidra, Cutter, Hopper, IDA, Binutils)")
+  .option("-f, --function <name>", "Function name or address")
+  .option("-n, --count <number>", "Number of instructions", (v) => parseInt(v, 10), 50)
+  .option("--backend <backend>", "Decompiler backend (ghidra, cutter, hopper, ida, binutils, auto)", "auto")
+  .option("--att", "Use AT&T syntax (default is Intel)")
+  .option("--json", "Print output as JSON")
+  .action(async (binary: string, opts: { function?: string; count: number; backend: string; att?: boolean; json?: boolean }) => {
+    const spinner = startSpinner(`Disassembling: ${chalk.cyan(binary)}...`, opts.json);
+    try {
+      const resolved = path.resolve(binary);
+      const result = await DecompilerRegistry.disassemble(resolved, {
+        functionOrAddress: opts.function,
+        count: opts.count,
+        backend: opts.backend as DecompilerBackendType,
+        syntax: opts.att ? "att" : "intel"
+      });
+
+      if (opts.json) {
+        printJson(result);
+        return;
+      }
+      spinner.succeed(`Disassembly complete via ${chalk.green(result.backendUsed.toUpperCase())}.`);
+
+      console.log();
+      console.log(chalk.bold("────────────────────────────────────────"));
+      console.log(chalk.bold.green(`  Disassembly: ${chalk.white(path.basename(resolved))}`));
+      if (result.target) {
+        console.log(`  Target:     ${chalk.cyan(result.target)}`);
+      }
+      console.log(`  Engine:     ${chalk.yellow(result.backendUsed.toUpperCase())}`);
+      console.log(chalk.bold("────────────────────────────────────────"));
+      for (const inst of result.instructions) {
+        const addr = chalk.dim(inst.address.padEnd(16));
+        const bytes = chalk.gray((inst.bytes ?? "").padEnd(20));
+        const mnem = chalk.bold.cyan(inst.mnemonic.padEnd(10));
+        const ops = chalk.white(inst.operands ?? "");
+        console.log(`  ${addr} ${bytes} ${mnem} ${ops}`);
+      }
+      console.log(chalk.bold("────────────────────────────────────────"));
+      console.log();
+    } catch (err: unknown) {
+      failCommand(spinner, opts.json, `Disassembly failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+// Command: decompile
+program
+  .command("decompile <binary>")
+  .description("Decompile binary code to C/pseudocode (Ghidra, Cutter, IDA)")
+  .option("-f, --function <name>", "Function name or address to decompile")
+  .option("--backend <backend>", "Decompiler backend (ghidra, cutter, ida, auto)", "auto")
+  .option("-o, --output <file>", "Save decompiled C code to file")
+  .option("--json", "Print output as JSON")
+  .action(async (binary: string, opts: { function?: string; backend: string; output?: string; json?: boolean }) => {
+    const spinner = startSpinner(`Decompiling: ${chalk.cyan(binary)}...`, opts.json);
+    try {
+      const resolved = path.resolve(binary);
+      const result = await DecompilerRegistry.decompile(resolved, {
+        functionOrAddress: opts.function,
+        backend: opts.backend as DecompilerBackendType
+      });
+
+      if (opts.output) {
+        const outPath = path.resolve(opts.output);
+        await fs.mkdir(path.dirname(outPath), { recursive: true });
+        await fs.writeFile(outPath, result.code, "utf-8");
+      }
+
+      if (opts.json) {
+        printJson(result);
+        return;
+      }
+
+      spinner.succeed(`Decompilation complete via ${chalk.green(result.backendUsed.toUpperCase())} in ${result.durationMs}ms.`);
+      console.log();
+      console.log(chalk.bold("────────────────────────────────────────"));
+      console.log(chalk.bold.green(`  Decompiled C Code: ${chalk.white(path.basename(resolved))}`));
+      console.log(chalk.bold("────────────────────────────────────────"));
+      console.log(result.code);
+      console.log(chalk.bold("────────────────────────────────────────"));
+      if (opts.output) {
+        console.log(`  Written to: ${chalk.cyan(opts.output)}`);
+      }
+    } catch (err: unknown) {
+      failCommand(spinner, opts.json, `Decompilation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+// Command: symbols
+program
+  .command("symbols <binary>")
+  .description("Dump symbols from binary (functions, data, imports, exports)")
+  .option("--filter <filter>", "Filter symbols containing this substring")
+  .option("--json", "Print output as JSON")
+  .action(async (binary: string, opts: { filter?: string; json?: boolean }) => {
+    const spinner = startSpinner(`Dumping symbols from: ${chalk.cyan(binary)}...`, opts.json);
+    try {
+      const resolved = path.resolve(binary);
+      const result = await DecompilerRegistry.dumpSymbols(resolved, opts.filter);
+
+      if (opts.json) {
+        printJson(result);
+        return;
+      }
+      spinner.succeed(`Found ${chalk.green(result.totalCount)} symbols via ${chalk.yellow(result.backendUsed.toUpperCase())}.`);
+
+      console.log();
+      console.log(chalk.bold("────────────────────────────────────────"));
+      console.log(chalk.bold.green(`  Symbols: ${chalk.white(path.basename(resolved))}`));
+      console.log(chalk.bold("────────────────────────────────────────"));
+      for (const s of result.symbols.slice(0, 100)) {
+        const kindTag = s.kind === "function" ? chalk.cyan("[FUNC]") : s.kind === "data" ? chalk.yellow("[DATA]") : chalk.gray("[IMP ]");
+        console.log(`  ${s.address.padEnd(18)} ${kindTag} ${chalk.white(s.name)}`);
+      }
+      if (result.symbols.length > 100) {
+        console.log(chalk.dim(`  ... and ${result.symbols.length - 100} more symbols (use --filter or --json)`));
+      }
+      console.log(chalk.bold("────────────────────────────────────────"));
+    } catch (err: unknown) {
+      failCommand(spinner, opts.json, `Symbol dump failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+// Command: audit (alias: rea-dir)
+program
+  .command("audit <targetDir>")
+  .alias("rea-dir")
+  .description("Run automated end-to-end reverse engineering, asset discovery, PE resource extraction, and multi-binary audit on a directory")
+  .option("-o, --output <dir>", "Directory where audit-report.json and audit-report.md will be saved")
+  .option("--max-depth <number>", "Maximum directory recursion depth", (v) => parseInt(v, 10), 4)
+  .option("--no-decompile", "Skip automated C decompilation phase (enabled by default)")
+  .option("--json", "Print output as JSON")
+  .action(async (targetDir: string, opts: { output?: string; maxDepth: number; decompile?: boolean; json?: boolean }) => {
+    const spinner = startSpinner(`Running automated application audit on: ${chalk.cyan(targetDir)}...`, opts.json);
+    try {
+      const resolved = path.resolve(targetDir);
+      const report = await ApplicationAuditor.auditDirectory(resolved, {
+        outputDir: opts.output,
+        maxDepth: opts.maxDepth,
+        decompile: opts.decompile !== false
+      });
+
+      if (opts.json) {
+        printJson(report);
+        return;
+      }
+
+      spinner.succeed(`Audit complete for ${chalk.green(report.appName)}.`);
+
+      console.log();
+      console.log(chalk.bold("──────────────────────────────────────────────────────────"));
+      console.log(chalk.bold.magenta(`  Application Reverse Engineering Audit: ${chalk.white(report.appName)}`));
+      console.log(chalk.bold("──────────────────────────────────────────────────────────"));
+      console.log(`  Target Directory:    ${chalk.white(report.targetDirectory)}`);
+      console.log(`  Engine Detected:     ${chalk.yellow(report.engine.toUpperCase())} (${Math.round(report.confidence * 100)}%)`);
+      console.log(`  Total Files:         ${chalk.cyan(report.totalFiles.toLocaleString())} (${(report.totalSizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+      console.log();
+
+      console.log(chalk.bold("  Summary of Recovered Artifacts:"));
+      console.log(`   ✔ ${chalk.bold("Dialog Templates:")}     ${chalk.green(report.summary.totalDialogs)} embedded Win32 dialogs`);
+      console.log(`   ✔ ${chalk.bold("Icons & Bitmaps:")}      ${chalk.green(report.summary.totalIcons)} visual resources`);
+      console.log(`   ✔ ${chalk.bold("Discovered CLI Flags:")} ${chalk.green(report.summary.totalCliFlags)} flags`);
+      console.log(`   ✔ ${chalk.bold("Sibling DLLs & Plugins:")} ${chalk.green(report.siblingDlls.length)} libraries (${report.summary.totalPluginExports} exports)`);
+      console.log(`   ✔ ${chalk.bold("Config Models:")}        ${chalk.green(report.configurationModels.length)} XML/JSON/YAML models`);
+      console.log(`   ✔ ${chalk.bold("EntryPoint Disassembly:")} ${chalk.green(report.summary.totalDisassembledInstructions)} instructions (${report.decompilationBackend.toUpperCase()})`);
+      if (report.summary.totalDecompiledFunctions > 0) {
+        console.log(`   ✔ ${chalk.bold("Decompiled Functions:")}  ${chalk.green(report.summary.totalDecompiledFunctions)} functions exported to C`);
+      } else {
+        console.log(`   - ${chalk.bold("Decompilation Engine:")}  ${report.decompilationEngineAvailable ? chalk.green("Ready (Ghidra/Cutter)") : chalk.yellow("Standby (Pass --decompile or install Ghidra)")}`);
+      }
+
+      if (report.primaryExecutable) {
+        console.log();
+        console.log(chalk.bold("  Primary Executable:"));
+        console.log(`   File:        ${chalk.white(report.primaryExecutable.name)}`);
+        console.log(`   Imports:     ${chalk.cyan(report.primaryExecutable.importedFunctionCount)} functions across ${report.primaryExecutable.importedDlls.length} DLLs`);
+        if (report.primaryExecutable.cliFlags.length > 0) {
+          console.log(`   CLI Flags:   ${chalk.dim(report.primaryExecutable.cliFlags.slice(0, 8).join(", "))}...`);
+        }
+      }
+
+      if (report.siblingDlls.length > 0) {
+        console.log();
+        console.log(chalk.bold("  Sibling DLLs & Plugins Discovered:"));
+        for (const dll of report.siblingDlls) {
+          console.log(`   • ${chalk.white(dll.relativePath)} (${chalk.yellow(dll.purposeInferred)})`);
+          if (dll.exportedFunctions.length > 0) {
+            console.log(`     Exports: ${chalk.dim(dll.exportedFunctions.slice(0, 6).join(", "))}`);
+          }
+        }
+      }
+
+      if (report.configurationModels.length > 0) {
+        console.log();
+        console.log(chalk.bold("  Key Configuration Models:"));
+        for (const cfg of report.configurationModels.slice(0, 8)) {
+          console.log(`   • ${chalk.white(cfg.relativePath)} [${chalk.cyan(cfg.category)}]: ${chalk.dim(cfg.description)}`);
+        }
+        if (report.configurationModels.length > 8) {
+          console.log(chalk.dim(`     ... and ${report.configurationModels.length - 8} more configuration files`));
+        }
+      }
+
+      if (report.recommendations.length > 0) {
+        console.log();
+        console.log(chalk.bold("  Recommendations for Clean-Room Recovery:"));
+        for (const rec of report.recommendations) {
+          console.log(`   ⚡ ${chalk.yellow(rec)}`);
+        }
+      }
+
+      if (opts.output) {
+        console.log();
+        console.log(`  Audit report saved to: ${chalk.cyan(opts.output)} (audit-report.json & audit-report.md)`);
+      }
+
+      console.log(chalk.bold("──────────────────────────────────────────────────────────"));
+      console.log();
+    } catch (err: unknown) {
+      failCommand(spinner, opts.json, `Directory audit failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
 
 program.parse(process.argv);

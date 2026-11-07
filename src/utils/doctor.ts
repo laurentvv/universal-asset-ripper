@@ -1,3 +1,4 @@
+import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
 import { findAssetRipper } from "./assetripper.js";
 import { runTool } from "./exec.js";
 
@@ -63,8 +64,25 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env): Promise<D
     found: rea !== null,
     required: false,
     version: rea ?? undefined,
-    hint: "Optional, needed for binary inspection: npm install -g @morluto/rea"
+    hint: "Optional, needed for binary inspection: vendored in ./rea or npm install -g rea-agents"
   });
+
+  // Decompiler / Reverse engineering engines
+  try {
+    const decompilerInfos = await DecompilerRegistry.getAvailableBackends();
+    for (const d of decompilerInfos) {
+      checks.push({
+        name: d.id,
+        found: d.found,
+        required: false,
+        version: d.version,
+        path: d.executablePath,
+        hint: d.hint
+      });
+    }
+  } catch {
+    // ignore
+  }
 
   return { ok: checks.filter((c) => c.required).every((c) => c.found), checks };
 }

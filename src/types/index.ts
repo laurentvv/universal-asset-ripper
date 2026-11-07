@@ -132,3 +132,6 @@ export interface BinaryScanResult {
   stringsFound: string[];
   recommendations: string[];
 }
+
+export { SecurityError } from "../utils/file-utils.js";
+
