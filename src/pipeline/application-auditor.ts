@@ -4,6 +4,7 @@ import { EngineDetector } from "../core/detector/engine-detector.js";
 import { DecompilerRegistry } from "../decompiler/decompiler-registry.js";
 import type { DisassembledInstruction } from "../decompiler/types.js";
 import { PeResourceParser } from "../parsers/pe/pe-resource-parser.js";
+import { authenticodeSummary, readAuthenticodeTable, type AuthenticodeSummary } from "../parsers/pe/authenticode.js";
 
 export interface ExecutableAuditSummary {
   name: string;
@@ -21,6 +22,7 @@ export interface ExecutableAuditSummary {
   version?: Record<string, string>;
   entryPointDisassembly: DisassembledInstruction[];
   decompiledFunctions?: Record<string, string>;
+  signature?: AuthenticodeSummary;
 }
 
 export interface SiblingDllAuditSummary {
@@ -414,6 +416,15 @@ export class ApplicationAuditor {
       // ignore
     }
 
+    // 5. Authenticode signature (certificate table + PKCS#7, digest + signature checks)
+    let signature: AuthenticodeSummary | undefined;
+    try {
+      const table = readAuthenticodeTable(await fs.readFile(fullPath));
+      if (table) signature = authenticodeSummary(table);
+    } catch {
+      // Damaged PE: the signature stays unreported
+    }
+
     return {
       name: path.basename(fullPath),
       relativePath: relPath,
@@ -427,7 +438,8 @@ export class ApplicationAuditor {
       dialogCount,
       iconCount,
       hasManifest,
-      entryPointDisassembly
+      entryPointDisassembly,
+      signature
     };
   }
 
@@ -507,6 +519,16 @@ export class ApplicationAuditor {
           lines.push(`${addr} ${mnem} ${ops}`);
         }
         lines.push("```");
+        lines.push("");
+      }
+
+      const sig = report.primaryExecutable.signature;
+      if (sig) {
+        if (sig.signed) {
+          lines.push(`- **Authenticode Signature:** signed (${sig.digestAlgorithm ?? "unknown digest"}); file hash ${sig.fileHash === "matches" ? "matches" : sig.fileHash === "differs" ? "**DIFFERS**" : "not checked"}; signature ${sig.signatureCheck}; embedded chain ${sig.chainComplete === null ? "unknown" : sig.chainComplete ? "complete" : "incomplete"}${sig.signer ? ` — ${sig.signer}` : ""}`);
+        } else {
+          lines.push("- **Authenticode Signature:** unsigned (no certificate table)");
+        }
         lines.push("");
       }
     }
