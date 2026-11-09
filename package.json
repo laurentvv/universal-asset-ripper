@@ -36,7 +36,7 @@
     "game-extraction",
     "rea"
   ],
-  "author": "Laurent VOLFF",
+  "author": "laurentvv",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",

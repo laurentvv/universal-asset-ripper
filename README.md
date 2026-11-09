@@ -317,4 +317,4 @@ CI (`.github/workflows/ci.yml`) runs lint, build and tests on Ubuntu and Windows
 
 ## 📄 License
 
-MIT © [Laurent VOLFF](https://github.com/laurentvv)
+MIT © [laurentvv](https://github.com/laurentvv)
